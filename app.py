@@ -9,7 +9,6 @@ app = Flask(__name__)
 print("Loading milk test results...")
 try:
     df = pd.read_csv("test_results_long.csv")
-    # Clean Pin_Number properly
     df['Pin_Number'] = df['Pin_Number'].astype(str).str.strip().str.zfill(6)
     print(f"✅ Loaded {len(df)} records. Sample PINs: {df['Pin_Number'].head(3).tolist()}")
 except Exception as e:
@@ -17,9 +16,10 @@ except Exception as e:
     df = pd.DataFrame()
 
 def get_results_for_pin(pin: str):
-    pin = str(pin).strip().zfill(6)
-    results = df[df['Pin_Number'] == pin].sort_values('sequence_number')
-    print(f"Lookup for PIN {pin} → Found {len(results)} records")   # Debug line
+    pin_clean = str(pin).strip().zfill(6)
+    print(f"Looking up cleaned PIN: '{pin_clean}'")
+    results = df[df['Pin_Number'] == pin_clean].sort_values('sequence_number')
+    print(f"→ Found {len(results)} records for PIN {pin_clean}")
     return results
 
 # ====================== ROUTES ======================
@@ -27,11 +27,19 @@ def get_results_for_pin(pin: str):
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
     resp = VoiceResponse()
-    resp.say("Hello, this is the milk testing results line.")
-    resp.pause(length=0.5)
+    
+    # Fixed greeting - avoid problematic words
+    resp.say("Hello. This is the milk testing results line.")
+    resp.pause(length=0.6)
 
-    gather = Gather(action="/gather_pin", num_digits=6, timeout=10, finish_on_key="#")
-    gather.say("Please enter your 6-digit PIN using your keypad, then press the pound key.")
+    gather = Gather(
+        action="/gather_pin",
+        num_digits=6,
+        timeout=12,
+        finish_on_key="#"
+    )
+    # Changed "enter" to something that speaks more clearly
+    gather.say("Please type your 6 digit PIN using your keypad, then press the pound key.")
     resp.append(gather)
 
     resp.say("We didn't receive any input. Goodbye.")
@@ -40,24 +48,28 @@ def voice():
 
 @app.route("/gather_pin", methods=['POST'])
 def gather_pin():
-    pin = request.values.get('Digits', '').strip()
-    print(f"Received PIN from Twilio: '{pin}'")   # This will show in Render logs
+    raw_digits = request.values.get('Digits', '').strip()
+    print(f"Raw input received: '{raw_digits}'")
+
+    # Aggressive cleaning
+    pin = ''.join(filter(str.isdigit, raw_digits))
+    print(f"Cleaned PIN: '{pin}'")
 
     resp = VoiceResponse()
 
-    if len(pin) != 6 or not pin.isdigit():
-        resp.say("Invalid PIN format. Please try again.")
+    if len(pin) != 6:
+        resp.say("Invalid PIN. Please try again.")
         resp.redirect("/voice")
         return str(resp)
 
     results_df = get_results_for_pin(pin)
 
     if results_df.empty:
-        resp.say(f"I'm sorry, no results found for PIN {pin}. Please check the number and try again.")
+        resp.say(f"Sorry, no results found for PIN {pin}. Please try again.")
         resp.redirect("/voice")
         return str(resp)
 
-    # Speak the results
+    # Speak results
     resp.say(f"Thank you. Here are your milk test results for PIN {pin}, starting with the most recent.")
 
     for _, row in results_df.iterrows():
@@ -77,11 +89,12 @@ def gather_pin():
         resp.say(f"Butterfat {row['fat']} percent.")
         resp.say(f"Protein {row['protein']} percent.")
         resp.say(f"Somatic cell count {int(row['scc']):,}.")
+        
         if int(row.get('mun', 0)) > 0:
             resp.say(f"Munn {int(row['mun'])}.")
+
         resp.pause(length=0.7)
 
-    # Repeat or end
     gather = Gather(action="/handle_action", num_digits=1, timeout=12)
     gather.say("To repeat these results, press 1. To end the call, press 2.")
     resp.append(gather)
