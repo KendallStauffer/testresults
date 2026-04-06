@@ -5,6 +5,9 @@ import os
 
 app = Flask(__name__)
 
+# Simple in-memory session (works fine for low traffic)
+sessions = {}
+
 # Load data
 print("Loading milk test results...")
 try:
@@ -17,9 +20,8 @@ except Exception as e:
 
 def get_results_for_pin(pin: str):
     pin_clean = str(pin).strip().zfill(6)
-    print(f"Looking up PIN: '{pin_clean}'")
     results = df[df['Pin_Number'] == pin_clean].sort_values('sequence_number')
-    print(f"→ Found {len(results)} records")
+    print(f"→ Found {len(results)} records for PIN {pin_clean}")
     return results
 
 def speak_pin_digits(pin: str):
@@ -32,7 +34,7 @@ def voice():
     resp = VoiceResponse()
     resp.say("Thank you for calling the Milk Market Administrator Test Results Center.", 
              voice="Polly.Joanna", language="en-US")
-    resp.pause(length=0.6)
+    resp.pause(length=0.5)
 
     gather = Gather(
         action="/gather_pin",
@@ -54,10 +56,11 @@ def voice():
 def gather_pin():
     digits = request.values.get('Digits', '').strip()
     speech = request.values.get('SpeechResult', '').strip()
-    
+    call_sid = request.values.get('CallSid')
+
     raw_input = digits if digits else speech
     pin = ''.join(filter(str.isdigit, raw_input))
-    print(f"Raw input: '{raw_input}' → Cleaned PIN: '{pin}'")
+    print(f"Raw: '{raw_input}' → Cleaned PIN: '{pin}'")
 
     resp = VoiceResponse()
 
@@ -67,11 +70,14 @@ def gather_pin():
         resp.redirect("/voice")
         return str(resp)
 
-    # Natural pause before confirmation
-    resp.pause(length=0.8)
+    # Store PIN in session so we don't ask again
+    sessions[call_sid] = pin
+
+    # Short pause as you requested
+    resp.pause(length=0.2)
     spoken_pin = speak_pin_digits(pin)
     resp.say(f"Am I right with {spoken_pin}?", voice="Polly.Joanna", language="en-US")
-    resp.pause(length=0.4)
+    resp.pause(length=0.3)
 
     gather = Gather(
         action="/confirm_pin",
@@ -91,6 +97,7 @@ def gather_pin():
 def confirm_pin():
     digits = request.values.get('Digits', '').strip()
     speech = request.values.get('SpeechResult', '').strip().lower()
+    call_sid = request.values.get('CallSid')
 
     resp = VoiceResponse()
 
@@ -101,55 +108,24 @@ def confirm_pin():
         resp.redirect("/voice")
         return str(resp)
 
-    # === FIXED: Read results immediately after confirmation ===
-    resp.pause(length=0.5)
-    resp.say("Thank you. Here are your milk test results.", voice="Polly.Joanna", language="en-US")
-
-    # Get the PIN from the request values (we'll pass it better in next version if needed)
-    # For now we use a direct approach - ask once more only if needed, but try to avoid
-    resp.redirect("/read_results")
-    return str(resp)
-
-
-@app.route("/read_results", methods=['GET', 'POST'])
-def read_results():
-    resp = VoiceResponse()
-
-    # This route is only reached after confirmation, so we still need the PIN.
-    # We'll ask for it one last time (this is the minimal 2nd ask)
-    gather = Gather(
-        action="/final_read",
-        num_digits=6,
-        timeout=8,
-        finish_on_key="",
-        input="dtmf speech",
-        speech_timeout="auto"
-    )
-    gather.say("Please say or enter your 6 digit PIN one more time.", 
-               voice="Polly.Joanna", language="en-US")
-    resp.append(gather)
-    return str(resp)
-
-
-@app.route("/final_read", methods=['POST'])
-def final_read():
-    digits = request.values.get('Digits', '').strip()
-    speech = request.values.get('SpeechResult', '').strip()
-    pin = ''.join(filter(str.isdigit, digits if digits else speech))
-
-    resp = VoiceResponse()
-
-    if len(pin) != 6:
-        resp.say("Invalid PIN. Goodbye.", voice="Polly.Joanna", language="en-US")
+    # Get the PIN we saved earlier
+    pin = sessions.get(call_sid)
+    if not pin:
+        resp.say("Sorry, something went wrong. Please try again.", voice="Polly.Joanna", language="en-US")
+        resp.redirect("/voice")
         return str(resp)
+
+    # === NOW READ RESULTS IMMEDIATELY ===
+    resp.say("Thank you. Here are your milk test results.", voice="Polly.Joanna", language="en-US")
 
     results_df = get_results_for_pin(pin)
 
     if results_df.empty:
-        resp.say("Sorry, no results found. Goodbye.", voice="Polly.Joanna", language="en-US")
+        resp.say("Sorry, no results found for that PIN.", voice="Polly.Joanna", language="en-US")
+        resp.redirect("/voice")
         return str(resp)
 
-    # Read the results
+    # Read results
     is_first = True
     for _, row in results_df.iterrows():
         try:
@@ -179,6 +155,7 @@ def final_read():
 
         resp.pause(length=0.7)
 
+    # Final options
     gather = Gather(action="/handle_action", num_digits=1, timeout=10)
     gather.say("To repeat these results, press 1. To end the call, press 2.", 
                voice="Polly.Joanna", language="en-US")
