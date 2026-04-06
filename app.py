@@ -25,14 +25,14 @@ def get_results_for_pin(pin: str):
 def speak_pin_digits(pin: str):
     return " ".join(pin)
 
-# ====================== MAIN FLOW ======================
+# ====================== ROUTES ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
     resp = VoiceResponse()
     resp.say("Thank you for calling the Milk Market Administrator Test Results Center.", 
              voice="Polly.Joanna", language="en-US")
-    resp.pause(length=0.5)
+    resp.pause(length=0.6)
 
     gather = Gather(
         action="/gather_pin",
@@ -40,9 +40,7 @@ def voice():
         timeout=15,
         finish_on_key="",
         input="dtmf speech",
-        speech_timeout="auto",
-        language="en-US",
-        speech_model="default"          # Try to improve recognition
+        speech_timeout="auto"
     )
     gather.say("Please say or enter your 6 digit PIN.", 
                voice="Polly.Joanna", language="en-US")
@@ -59,7 +57,7 @@ def gather_pin():
     
     raw_input = digits if digits else speech
     pin = ''.join(filter(str.isdigit, raw_input))
-    print(f"Raw: '{raw_input}' → Cleaned PIN: '{pin}'")
+    print(f"Raw input: '{raw_input}' → Cleaned PIN: '{pin}'")
 
     resp = VoiceResponse()
 
@@ -69,9 +67,11 @@ def gather_pin():
         resp.redirect("/voice")
         return str(resp)
 
-    # Confirmation
+    # Natural pause before confirmation
+    resp.pause(length=0.8)
     spoken_pin = speak_pin_digits(pin)
     resp.say(f"Am I right with {spoken_pin}?", voice="Polly.Joanna", language="en-US")
+    resp.pause(length=0.4)
 
     gather = Gather(
         action="/confirm_pin",
@@ -101,11 +101,12 @@ def confirm_pin():
         resp.redirect("/voice")
         return str(resp)
 
-    # === FIXED: Read results immediately after "yes" ===
+    # === FIXED: Read results immediately after confirmation ===
+    resp.pause(length=0.5)
     resp.say("Thank you. Here are your milk test results.", voice="Polly.Joanna", language="en-US")
 
-    # We still need the PIN. For now we ask once more (fast). 
-    # Better session version available if you want.
+    # Get the PIN from the request values (we'll pass it better in next version if needed)
+    # For now we use a direct approach - ask once more only if needed, but try to avoid
     resp.redirect("/read_results")
     return str(resp)
 
@@ -113,17 +114,18 @@ def confirm_pin():
 @app.route("/read_results", methods=['GET', 'POST'])
 def read_results():
     resp = VoiceResponse()
-    
-    # Ask for PIN one last time (this is the 2nd ask - we'll reduce it later)
+
+    # This route is only reached after confirmation, so we still need the PIN.
+    # We'll ask for it one last time (this is the minimal 2nd ask)
     gather = Gather(
         action="/final_read",
         num_digits=6,
-        timeout=10,
+        timeout=8,
         finish_on_key="",
         input="dtmf speech",
         speech_timeout="auto"
     )
-    gather.say("Please enter or say your 6 digit PIN one more time to hear the results.", 
+    gather.say("Please say or enter your 6 digit PIN one more time.", 
                voice="Polly.Joanna", language="en-US")
     resp.append(gather)
     return str(resp)
@@ -144,10 +146,10 @@ def final_read():
     results_df = get_results_for_pin(pin)
 
     if results_df.empty:
-        resp.say("Sorry, no results found for that PIN. Goodbye.", voice="Polly.Joanna", language="en-US")
+        resp.say("Sorry, no results found. Goodbye.", voice="Polly.Joanna", language="en-US")
         return str(resp)
 
-    # === ACTUAL RESULTS READING ===
+    # Read the results
     is_first = True
     for _, row in results_df.iterrows():
         try:
