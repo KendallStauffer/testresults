@@ -10,16 +10,16 @@ print("Loading milk test results...")
 try:
     df = pd.read_csv("test_results_long.csv")
     df['Pin_Number'] = df['Pin_Number'].astype(str).str.strip().str.zfill(6)
-    print(f"✅ Loaded {len(df)} records. Sample PINs: {df['Pin_Number'].head(3).tolist()}")
+    print(f"✅ Loaded {len(df)} records.")
 except Exception as e:
     print(f"❌ Error loading CSV: {e}")
     df = pd.DataFrame()
 
 def get_results_for_pin(pin: str):
     pin_clean = str(pin).strip().zfill(6)
-    print(f"Looking up cleaned PIN: '{pin_clean}'")
+    print(f"Looking up PIN: '{pin_clean}'")
     results = df[df['Pin_Number'] == pin_clean].sort_values('sequence_number')
-    print(f"→ Found {len(results)} records for PIN {pin_clean}")
+    print(f"→ Found {len(results)} records")
     return results
 
 # ====================== ROUTES ======================
@@ -28,8 +28,8 @@ def get_results_for_pin(pin: str):
 def voice():
     resp = VoiceResponse()
     
-    # Fixed greeting - avoid problematic words
-    resp.say("Hello. This is the milk testing results line.")
+    # Use better voice + language
+    resp.say("Hello. This is the milk testing results line.", voice="Polly.Joanna", language="en-US")
     resp.pause(length=0.6)
 
     gather = Gather(
@@ -38,11 +38,11 @@ def voice():
         timeout=12,
         finish_on_key="#"
     )
-    # Changed "enter" to something that speaks more clearly
-    gather.say("Please type your 6 digit PIN using your keypad, then press the pound key.")
+    gather.say("Please type your 6 digit PIN using your keypad, then press the pound key.", 
+               voice="Polly.Joanna", language="en-US")
     resp.append(gather)
 
-    resp.say("We didn't receive any input. Goodbye.")
+    resp.say("We didn't receive any input. Goodbye.", voice="Polly.Joanna", language="en-US")
     return str(resp)
 
 
@@ -51,26 +51,27 @@ def gather_pin():
     raw_digits = request.values.get('Digits', '').strip()
     print(f"Raw input received: '{raw_digits}'")
 
-    # Aggressive cleaning
     pin = ''.join(filter(str.isdigit, raw_digits))
     print(f"Cleaned PIN: '{pin}'")
 
     resp = VoiceResponse()
 
     if len(pin) != 6:
-        resp.say("Invalid PIN. Please try again.")
+        resp.say("Invalid PIN. Please try again.", voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
         return str(resp)
 
     results_df = get_results_for_pin(pin)
 
     if results_df.empty:
-        resp.say(f"Sorry, no results found for PIN {pin}. Please try again.")
+        resp.say(f"Sorry, no results found for PIN {pin}. Please try again.", 
+                 voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
         return str(resp)
 
-    # Speak results
-    resp.say(f"Thank you. Here are your milk test results for PIN {pin}, starting with the most recent.")
+    # Speak results with better voice
+    resp.say(f"Thank you. Here are your milk test results for PIN {pin}, starting with the most recent.", 
+             voice="Polly.Joanna", language="en-US")
 
     for _, row in results_df.iterrows():
         try:
@@ -85,18 +86,19 @@ def gather_pin():
             year = 2023
 
         resp.pause(length=0.5)
-        resp.say(f"Sample from {month_name} {day}, {year}.")
-        resp.say(f"Butterfat {row['fat']} percent.")
-        resp.say(f"Protein {row['protein']} percent.")
-        resp.say(f"Somatic cell count {int(row['scc']):,}.")
+        resp.say(f"Sample from {month_name} {day}, {year}.", voice="Polly.Joanna", language="en-US")
+        resp.say(f"Butterfat {row['fat']} percent.", voice="Polly.Joanna", language="en-US")
+        resp.say(f"Protein {row['protein']} percent.", voice="Polly.Joanna", language="en-US")
+        resp.say(f"Somatic cell count {int(row['scc']):,}.", voice="Polly.Joanna", language="en-US")
         
         if int(row.get('mun', 0)) > 0:
-            resp.say(f"Munn {int(row['mun'])}.")
+            resp.say(f"Munn {int(row['mun'])}.", voice="Polly.Joanna", language="en-US")
 
         resp.pause(length=0.7)
 
     gather = Gather(action="/handle_action", num_digits=1, timeout=12)
-    gather.say("To repeat these results, press 1. To end the call, press 2.")
+    gather.say("To repeat these results, press 1. To end the call, press 2.", 
+               voice="Polly.Joanna", language="en-US")
     resp.append(gather)
 
     return str(resp)
@@ -108,10 +110,10 @@ def handle_action():
     resp = VoiceResponse()
 
     if digits == "1":
-        resp.say("Repeating the results.")
+        resp.say("Repeating the results.", voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
     else:
-        resp.say("Thank you for calling. Goodbye.")
+        resp.say("Thank you for calling. Goodbye.", voice="Polly.Joanna", language="en-US")
     return str(resp)
 
 
