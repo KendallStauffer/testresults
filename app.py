@@ -5,7 +5,7 @@ import os
 
 app = Flask(__name__)
 
-active_pins = {}   # Store PIN per call
+active_pins = {}
 
 print("Loading milk test results...")
 try:
@@ -24,7 +24,6 @@ def voice():
     call_sid = request.values.get('CallSid')
     resp = VoiceResponse()
 
-    # Play greeting only the very first time
     if call_sid not in active_pins:
         resp.say("Thank you for calling the Milk Market Administrator Test Results Center.", 
                  voice="Polly.Joanna", language="en-US")
@@ -62,21 +61,9 @@ def gather_pin():
     if len(pin) != 6:
         resp.say("Let's try again. Please enter your 6 digit PIN.", 
                  voice="Polly.Joanna", language="en-US")
-        # Do NOT redirect to /voice here — just ask again directly
-        gather = Gather(
-            action="/gather_pin",
-            num_digits=6,
-            timeout=15,
-            finish_on_key="",
-            input="dtmf speech",
-            speech_timeout="auto"
-        )
-        gather.say("Please say or enter your 6 digit PIN.", 
-                   voice="Polly.Joanna", language="en-US")
-        resp.append(gather)
+        resp.redirect("/voice")
         return str(resp)
 
-    # Store PIN
     active_pins[call_sid] = {"pin": pin}
 
     resp.pause(length=0.2)
@@ -119,19 +106,19 @@ def confirm_pin():
         resp.redirect("/voice")
         return str(resp)
 
-    # Read results immediately
-    resp.say("Thank you. Here are your milk test results.", voice="Polly.Joanna", language="en-US")
-
+    # Check if results exist
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
 
     if results_df.empty:
         resp.say("Sorry, no results were found for that PIN.", voice="Polly.Joanna", language="en-US")
-        resp.pause(length=0.5)
+        resp.pause(length=0.6)
         resp.say("Let's try again. Please enter your 6 digit PIN.", voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
         return str(resp)
 
-    # Read the results
+    # Results found - read them
+    resp.say("Thank you. Here are your milk test results.", voice="Polly.Joanna", language="en-US")
+
     is_first = True
     for _, row in results_df.iterrows():
         try:
