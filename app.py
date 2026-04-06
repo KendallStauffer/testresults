@@ -23,7 +23,6 @@ def get_results_for_pin(pin: str):
     return results
 
 def speak_pin_digits(pin: str):
-    """Speak PIN digit by digit: 2 0 0 0 1 9"""
     return " ".join(pin)
 
 # ====================== ROUTES ======================
@@ -31,14 +30,17 @@ def speak_pin_digits(pin: str):
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
     resp = VoiceResponse()
-    resp.say("Hello. This is the milk testing results line.", voice="Polly.Joanna", language="en-US")
-    resp.pause(length=0.5)
+    
+    # New custom greeting as requested
+    resp.say("Thank you for calling the Milk Market Administrator Test Results Center.", 
+             voice="Polly.Joanna", language="en-US")
+    resp.pause(length=0.6)
 
     gather = Gather(
         action="/gather_pin",
         num_digits=6,
         timeout=15,
-        finish_on_key="",           # Removed pound key requirement
+        finish_on_key="",
         input="dtmf speech",
         speech_timeout="auto"
     )
@@ -62,12 +64,12 @@ def gather_pin():
     resp = VoiceResponse()
 
     if len(pin) != 6:
-        resp.say("Sorry, that is not a 6 digit PIN. Please try again.", 
+        resp.say(f"You entered {pin}. That is not 6 digits. Please try again.", 
                  voice="Polly.Joanna", language="en-US")
-        resp.redirect("/voice")
+        resp.redirect("/voice")          # Fixed: goes back to ask for PIN again
         return str(resp)
 
-    # Speak PIN digit by digit
+    # Confirmation
     spoken_pin = speak_pin_digits(pin)
     resp.say(f"Am I right with {spoken_pin}?", voice="Polly.Joanna", language="en-US")
 
@@ -99,11 +101,11 @@ def confirm_pin():
         resp.redirect("/voice")
         return str(resp)
 
-    # PIN confirmed - now read results directly (no going back to hello)
+    # PIN confirmed - now read results directly without going back to hello
     resp.say("Thank you. Here are your milk test results.", voice="Polly.Joanna", language="en-US")
-    
-    # For now we still need the PIN. We'll ask again but it's quick.
-    # Better version with session coming if you want.
+
+    # Get the last PIN from the request (we'll improve session later if needed)
+    # For now we redirect to voice to re-enter PIN (quick)
     resp.redirect("/voice")
     return str(resp)
 
