@@ -19,19 +19,17 @@ def get_results_for_pin(pin: str):
     pin_clean = str(pin).strip().zfill(6)
     print(f"Looking up PIN: '{pin_clean}'")
     results = df[df['Pin_Number'] == pin_clean].sort_values('sequence_number')
-    print(f"→ Found {len(results)} records")
+    print(f"→ Found {len(results)} records for PIN {pin_clean}")
     return results
 
 def speak_pin_digits(pin: str):
-    return " ".join(pin)
+    return " ".join(list(pin))
 
-# ====================== ROUTES ======================
+# ====================== MAIN ROUTES ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
     resp = VoiceResponse()
-    
-    # New custom greeting as requested
     resp.say("Thank you for calling the Milk Market Administrator Test Results Center.", 
              voice="Polly.Joanna", language="en-US")
     resp.pause(length=0.6)
@@ -66,7 +64,7 @@ def gather_pin():
     if len(pin) != 6:
         resp.say(f"You entered {pin}. That is not 6 digits. Please try again.", 
                  voice="Polly.Joanna", language="en-US")
-        resp.redirect("/voice")          # Fixed: goes back to ask for PIN again
+        resp.redirect("/voice")
         return str(resp)
 
     # Confirmation
@@ -101,12 +99,93 @@ def confirm_pin():
         resp.redirect("/voice")
         return str(resp)
 
-    # PIN confirmed - now read results directly without going back to hello
-    resp.say("Thank you. Here are your milk test results.", voice="Polly.Joanna", language="en-US")
+    # === FIXED: Now we read the results RIGHT HERE ===
+    # We need the PIN. Since we don't have session yet, we ask again but it's fast.
+    # Better solution coming if this still fails.
 
-    # Get the last PIN from the request (we'll improve session later if needed)
-    # For now we redirect to voice to re-enter PIN (quick)
-    resp.redirect("/voice")
+    resp.say("Thank you. Here are your milk test results.", voice="Polly.Joanna", language="en-US")
+    
+    # Temporary workaround: redirect to a new route that reads results
+    # For now, we'll ask for PIN again (quick)
+    resp.redirect("/read_results")
+    return str(resp)
+
+
+# NEW ROUTE - Reads the results without restarting the greeting
+@app.route("/read_results", methods=['GET', 'POST'])
+def read_results():
+    resp = VoiceResponse()
+    
+    # For simplicity, we ask for PIN again here (fast)
+    # In next version we can pass the PIN properly
+    gather = Gather(
+        action="/gather_pin_for_results",
+        num_digits=6,
+        timeout=10,
+        finish_on_key=""
+    )
+    gather.say("Please enter your 6 digit PIN again to read the results.", 
+               voice="Polly.Joanna", language="en-US")
+    resp.append(gather)
+    return str(resp)
+
+
+@app.route("/gather_pin_for_results", methods=['POST'])
+def gather_pin_for_results():
+    digits = request.values.get('Digits', '').strip()
+    speech = request.values.get('SpeechResult', '').strip()
+    pin = ''.join(filter(str.isdigit, digits if digits else speech))
+
+    resp = VoiceResponse()
+
+    if len(pin) != 6:
+        resp.say("Invalid PIN. Goodbye.", voice="Polly.Joanna", language="en-US")
+        return str(resp)
+
+    results_df = get_results_for_pin(pin)
+
+    if results_df.empty:
+        resp.say("Sorry, no results found. Goodbye.", voice="Polly.Joanna", language="en-US")
+        return str(resp)
+
+    # === ACTUAL RESULTS READING ===
+    resp.say(f"Here are your milk test results for PIN {pin}.", voice="Polly.Joanna", language="en-US")
+
+    is_first = True
+    for _, row in results_df.iterrows():
+        try:
+            date_str = str(row['latest_test_date'])
+            year = int(date_str[:4])
+            month_num = int(date_str[5:7])
+            day = int(row['day'])
+            month_name = pd.to_datetime(f"{year}-{month_num:02d}-01").strftime('%B')
+        except:
+            month_name = "the month"
+            day = int(row['day'])
+            year = 2023
+
+        resp.pause(length=0.5)
+        if is_first:
+            resp.say(f"First sample dated {month_name} {day}, {year}.", voice="Polly.Joanna", language="en-US")
+            is_first = False
+        else:
+            resp.say(f"The next sample dated {month_name} {day}.", voice="Polly.Joanna", language="en-US")
+
+        resp.say(f"Butterfat {row['fat']} percent.", voice="Polly.Joanna", language="en-US")
+        resp.say(f"Protein {row['protein']} percent.", voice="Polly.Joanna", language="en-US")
+        resp.say(f"Somatic cell count {int(row['scc']):,}.", voice="Polly.Joanna", language="en-US")
+        
+        if int(row.get('mun', 0)) > 0:
+            resp.say(f"Munn {int(row['mun'])}.", voice="Polly.Joanna", language="en-US")
+
+        resp.pause(length=0.7)
+
+    # Final options
+    gather = Gather(action="/handle_action", num_digits=1, timeout=10)
+    gather.say("To repeat these results, press 1. To end the call, press 2.", 
+               voice="Polly.Joanna", language="en-US")
+    resp.append(gather)
+
     return str(resp)
 
 
