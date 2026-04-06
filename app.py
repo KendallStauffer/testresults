@@ -76,7 +76,8 @@ def gather_pin():
         num_digits=1,
         timeout=10,
         input="dtmf speech",
-        speech_timeout="auto"
+        speech_timeout="auto",
+        bargeIn=True
     )
     gather.say("Say yes or press 1 for yes. Say no or press 2 for no.", 
                voice="Polly.Joanna", language="en-US")
@@ -112,7 +113,7 @@ def confirm_pin():
     if results_df.empty:
         resp.say("Sorry, no results were found for that PIN.", voice="Polly.Joanna", language="en-US")
         resp.pause(length=0.6)
-        resp.say("Let's try again. Please enter your 6 digit PIN.", voice="Polly.Joanna", language="en-US")
+        resp.say("Let's try again. ", voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
         return str(resp)
 
