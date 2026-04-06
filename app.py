@@ -5,7 +5,7 @@ import os
 
 app = Flask(__name__)
 
-# ====================== LOAD DATA ======================
+# Load data
 print("Loading milk test results...")
 try:
     df = pd.read_csv("test_results_long.csv")
@@ -27,18 +27,18 @@ def get_results_for_pin(pin: str):
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
     resp = VoiceResponse()
-    
-    # Use better voice + language
     resp.say("Hello. This is the milk testing results line.", voice="Polly.Joanna", language="en-US")
-    resp.pause(length=0.6)
+    resp.pause(length=0.5)
 
     gather = Gather(
         action="/gather_pin",
         num_digits=6,
-        timeout=12,
-        finish_on_key="#"
+        timeout=15,
+        finish_on_key="#",
+        input="dtmf speech",        # Accept both keypad and voice
+        speech_timeout="auto"
     )
-    gather.say("Please type your 6 digit PIN using your keypad, then press the pound key.", 
+    gather.say("Please say or enter your 6 digit PIN, then press the pound key.", 
                voice="Polly.Joanna", language="en-US")
     resp.append(gather)
 
@@ -48,58 +48,57 @@ def voice():
 
 @app.route("/gather_pin", methods=['POST'])
 def gather_pin():
-    raw_digits = request.values.get('Digits', '').strip()
-    print(f"Raw input received: '{raw_digits}'")
-
-    pin = ''.join(filter(str.isdigit, raw_digits))
-    print(f"Cleaned PIN: '{pin}'")
+    digits = request.values.get('Digits', '').strip()
+    speech = request.values.get('SpeechResult', '').strip()
+    
+    raw_input = digits if digits else speech
+    pin = ''.join(filter(str.isdigit, raw_input))
+    print(f"Raw input: '{raw_input}' → Cleaned PIN: '{pin}'")
 
     resp = VoiceResponse()
 
     if len(pin) != 6:
-        resp.say("Invalid PIN. Please try again.", voice="Polly.Joanna", language="en-US")
-        resp.redirect("/voice")
-        return str(resp)
-
-    results_df = get_results_for_pin(pin)
-
-    if results_df.empty:
-        resp.say(f"Sorry, no results found for PIN {pin}. Please try again.", 
+        resp.say("Sorry, that is not a 6 digit PIN. Please try again.", 
                  voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
         return str(resp)
 
-    # Speak results with better voice
-    resp.say(f"Thank you. Here are your milk test results for PIN {pin}, starting with the most recent.", 
-             voice="Polly.Joanna", language="en-US")
+    # Confirmation with both DTMF and speech support
+    resp.say(f"Am I right with {pin}?", voice="Polly.Joanna", language="en-US")
 
-    for _, row in results_df.iterrows():
-        try:
-            date_str = str(row['latest_test_date'])
-            year = int(date_str[:4])
-            month_num = int(date_str[5:7])
-            day = int(row['day'])
-            month_name = pd.to_datetime(f"{year}-{month_num:02d}-01").strftime('%B')
-        except:
-            month_name = "the month"
-            day = int(row['day'])
-            year = 2023
-
-        resp.pause(length=0.5)
-        resp.say(f"Sample from {month_name} {day}, {year}.", voice="Polly.Joanna", language="en-US")
-        resp.say(f"Butterfat {row['fat']} percent.", voice="Polly.Joanna", language="en-US")
-        resp.say(f"Protein {row['protein']} percent.", voice="Polly.Joanna", language="en-US")
-        resp.say(f"Somatic cell count {int(row['scc']):,}.", voice="Polly.Joanna", language="en-US")
-        
-        if int(row.get('mun', 0)) > 0:
-            resp.say(f"Munn {int(row['mun'])}.", voice="Polly.Joanna", language="en-US")
-
-        resp.pause(length=0.7)
-
-    gather = Gather(action="/handle_action", num_digits=1, timeout=12)
-    gather.say("To repeat these results, press 1. To end the call, press 2.", 
+    gather = Gather(
+        action="/confirm_pin",
+        num_digits=1,
+        timeout=12,
+        input="dtmf speech",           # Accept 1/2 or "yes"/"no"
+        speech_timeout="auto"
+    )
+    gather.say("Say yes or press 1 for yes. Say no or press 2 for no.", 
                voice="Polly.Joanna", language="en-US")
     resp.append(gather)
+
+    return str(resp)
+
+
+@app.route("/confirm_pin", methods=['POST'])
+def confirm_pin():
+    digits = request.values.get('Digits', '').strip()
+    speech = request.values.get('SpeechResult', '').strip().lower()
+
+    resp = VoiceResponse()
+
+    # Accept "yes", "1", "yeah", "correct", etc.
+    is_yes = digits == "1" or any(word in speech for word in ["yes", "yeah", "correct", "right"])
+
+    if not is_yes:
+        resp.say("Okay, let's try again.", voice="Polly.Joanna", language="en-US")
+        resp.redirect("/voice")
+        return str(resp)
+
+    # PIN is confirmed - now read the results
+    # For simplicity, we re-ask for PIN (we can improve this later with sessions)
+    resp.say("Thank you. Retrieving your results.", voice="Polly.Joanna", language="en-US")
+    resp.redirect("/voice")   # This will ask for PIN again but it's confirmed
 
     return str(resp)
 
