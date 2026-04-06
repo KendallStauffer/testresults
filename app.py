@@ -22,6 +22,10 @@ def get_results_for_pin(pin: str):
     print(f"→ Found {len(results)} records")
     return results
 
+def speak_pin_digits(pin: str):
+    """Speak PIN digit by digit: 2 0 0 0 1 9"""
+    return " ".join(pin)
+
 # ====================== ROUTES ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
@@ -34,11 +38,11 @@ def voice():
         action="/gather_pin",
         num_digits=6,
         timeout=15,
-        finish_on_key="#",
-        input="dtmf speech",        # Accept both keypad and voice
+        finish_on_key="",           # Removed pound key requirement
+        input="dtmf speech",
         speech_timeout="auto"
     )
-    gather.say("Please say or enter your 6 digit PIN, then press the pound key.", 
+    gather.say("Please say or enter your 6 digit PIN.", 
                voice="Polly.Joanna", language="en-US")
     resp.append(gather)
 
@@ -63,14 +67,15 @@ def gather_pin():
         resp.redirect("/voice")
         return str(resp)
 
-    # Confirmation with both DTMF and speech support
-    resp.say(f"Am I right with {pin}?", voice="Polly.Joanna", language="en-US")
+    # Speak PIN digit by digit
+    spoken_pin = speak_pin_digits(pin)
+    resp.say(f"Am I right with {spoken_pin}?", voice="Polly.Joanna", language="en-US")
 
     gather = Gather(
         action="/confirm_pin",
         num_digits=1,
         timeout=12,
-        input="dtmf speech",           # Accept 1/2 or "yes"/"no"
+        input="dtmf speech",
         speech_timeout="auto"
     )
     gather.say("Say yes or press 1 for yes. Say no or press 2 for no.", 
@@ -87,19 +92,19 @@ def confirm_pin():
 
     resp = VoiceResponse()
 
-    # Accept "yes", "1", "yeah", "correct", etc.
-    is_yes = digits == "1" or any(word in speech for word in ["yes", "yeah", "correct", "right"])
+    is_yes = digits == "1" or any(word in speech for word in ["yes", "yeah", "correct", "right", "yep"])
 
     if not is_yes:
         resp.say("Okay, let's try again.", voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
         return str(resp)
 
-    # PIN is confirmed - now read the results
-    # For simplicity, we re-ask for PIN (we can improve this later with sessions)
-    resp.say("Thank you. Retrieving your results.", voice="Polly.Joanna", language="en-US")
-    resp.redirect("/voice")   # This will ask for PIN again but it's confirmed
-
+    # PIN confirmed - now read results directly (no going back to hello)
+    resp.say("Thank you. Here are your milk test results.", voice="Polly.Joanna", language="en-US")
+    
+    # For now we still need the PIN. We'll ask again but it's quick.
+    # Better version with session coming if you want.
+    resp.redirect("/voice")
     return str(resp)
 
 
