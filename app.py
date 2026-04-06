@@ -5,8 +5,8 @@ import os
 
 app = Flask(__name__)
 
-# In-memory storage for active calls
-active_calls = {}
+# Store PIN for each active call
+active_pins = {}
 
 print("Loading milk test results...")
 try:
@@ -51,7 +51,7 @@ def gather_pin():
 
     raw = digits if digits else speech
     pin = ''.join(filter(str.isdigit, raw))
-    print(f"Raw input: '{raw}' → PIN: '{pin}'")
+    print(f"Received: '{raw}' → PIN: '{pin}'")
 
     resp = VoiceResponse()
 
@@ -62,7 +62,7 @@ def gather_pin():
         return str(resp)
 
     # Store PIN for this call
-    active_calls[call_sid] = pin
+    active_pins[call_sid] = pin
 
     resp.pause(length=0.2)
     spoken_pin = speak_pin_digits(pin)
@@ -98,14 +98,14 @@ def confirm_pin():
         resp.redirect("/voice")
         return str(resp)
 
-    # Get the stored PIN
-    pin = active_calls.get(call_sid)
+    # Get stored PIN and read results immediately
+    pin = active_pins.get(call_sid)
     if not pin:
         resp.say("Sorry, something went wrong. Please start over.", voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
         return str(resp)
 
-    # === READ RESULTS IMMEDIATELY ===
+    # === READ RESULTS RIGHT HERE (no second PIN ask) ===
     resp.say("Thank you. Here are your milk test results.", voice="Polly.Joanna", language="en-US")
 
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
