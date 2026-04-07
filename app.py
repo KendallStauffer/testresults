@@ -59,7 +59,6 @@ def log_call(event: str, extra: dict = None):
     logger.info(f"{event} | CallSid={call_sid} | From={from_number} {details}")
 
 # ====================== ADMIN PAGES ======================
-
 @app.route("/status")
 def status():
     record_count = len(df) if not df.empty else 0
@@ -81,7 +80,6 @@ def status():
 def upload_csv():
     if request.method == 'POST':
         password = request.form.get('password', '').strip()
-
         if password != UPLOAD_PASSWORD:
             return "<h2>❌ Incorrect Password</h2><p><a href='/upload'>Try again</a></p>", 401
 
@@ -150,13 +148,13 @@ def voice():
     gather = Gather(
         action="/gather_pin",
         num_digits=6,
-        timeout=15,
+        timeout=12,                    # shorter timeout
         finish_on_key="#",
         input="dtmf speech",
-        speech_timeout=4,
+        speech_timeout=3,              # reduced from 4
         language="en-US",
-        speech_model="numbers_and_commands",   # Better for digits
-        enhanced="true",                       # Higher accuracy model
+        speech_model="numbers_and_commands",
+        enhanced="true",
         barge_in="true"
     )
     gather.say("Please say or enter your 6 digit PIN.", 
@@ -176,11 +174,18 @@ def gather_pin():
     raw = digits if digits else speech
     print(f"Raw input received: '{raw}'")
 
-    # Strong cleaning for numbers
+    # Strong cleaning
     cleaned = raw.replace("point", "").replace(".", "").replace(",", "").replace(" ", "")
     pin = ''.join(filter(str.isdigit, cleaned))
 
-    # Take last 6 digits if more than 6 were detected
+    if len(pin) < 6 and speech:
+        word_map = {
+            "zero": "0", "oh": "0", "o": "0", "one": "1", "two": "2", "three": "3",
+            "four": "4", "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9"
+        }
+        spoken = speech.lower().split()
+        pin = ''.join(word_map.get(w, '') for w in spoken)
+
     if len(pin) > 6:
         pin = pin[-6:]
 
@@ -195,10 +200,10 @@ def gather_pin():
         gather = Gather(
             action="/gather_pin",
             num_digits=6,
-            timeout=15,
+            timeout=12,
             finish_on_key="#",
             input="dtmf speech",
-            speech_timeout=5,
+            speech_timeout=3,
             language="en-US",
             speech_model="numbers_and_commands",
             enhanced="true",
@@ -215,10 +220,11 @@ def gather_pin():
     spoken_pin = speak_pin_digits(pin)
     resp.say(f"Am I right with {spoken_pin}?", voice="Polly.Joanna", language="en-US")
 
+    # Tighter flow - no extra pause
     gather = Gather(
         action="/confirm_pin",
         num_digits=1,
-        timeout=10,
+        timeout=8,
         input="dtmf speech",
         speech_timeout="auto",
         language="en-US",
