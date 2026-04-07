@@ -148,10 +148,10 @@ def voice():
     gather = Gather(
         action="/gather_pin",
         num_digits=6,
-        timeout=12,                    # shorter timeout
+        timeout=12,
         finish_on_key="#",
         input="dtmf speech",
-        speech_timeout=3,              # reduced from 4
+        speech_timeout=3,
         language="en-US",
         speech_model="numbers_and_commands",
         enhanced="true",
@@ -174,20 +174,27 @@ def gather_pin():
     raw = digits if digits else speech
     print(f"Raw input received: '{raw}'")
 
-    # Strong cleaning
-    cleaned = raw.replace("point", "").replace(".", "").replace(",", "").replace(" ", "")
-    pin = ''.join(filter(str.isdigit, cleaned))
+    # === BEST WORD-TO-DIGIT CONVERSION (handles capital letters) ===
+    if not raw:
+        pin = ""
+    else:
+        # Try direct digits first
+        pin = ''.join(filter(str.isdigit, raw))
 
-    if len(pin) < 6 and speech:
-        word_map = {
-            "zero": "0", "oh": "0", "o": "0", "one": "1", "two": "2", "three": "3",
-            "four": "4", "five": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9"
-        }
-        spoken = speech.lower().split()
-        pin = ''.join(word_map.get(w, '') for w in spoken)
+        # If not 6 digits, convert spoken words (both lowercase and capitalized)
+        if len(pin) != 6 and speech:
+            word_map = {
+                "zero": "0", "Zero": "0", "oh": "0", "Oh": "0", "o": "0", "O": "0",
+                "one": "1", "One": "1", "two": "2", "Two": "2", "three": "3", "Three": "3",
+                "four": "4", "Four": "4", "five": "5", "Five": "5", "six": "6", "Six": "6",
+                "seven": "7", "Seven": "7", "eight": "8", "Eight": "8", "nine": "9", "Nine": "9"
+            }
+            spoken = speech.lower().split()   # still lower for matching
+            pin = ''.join(word_map.get(w.capitalize(), word_map.get(w, '')) for w in spoken)
 
-    if len(pin) > 6:
-        pin = pin[-6:]
+        # Final fallback: take last 6 digits if we have more
+        if len(pin) > 6:
+            pin = pin[-6:]
 
     log_call("PIN_ATTEMPT", {"raw": raw, "cleaned": pin, "length": len(pin)})
 
@@ -220,7 +227,6 @@ def gather_pin():
     spoken_pin = speak_pin_digits(pin)
     resp.say(f"Am I right with {spoken_pin}?", voice="Polly.Joanna", language="en-US")
 
-    # Tighter flow - no extra pause
     gather = Gather(
         action="/confirm_pin",
         num_digits=1,
@@ -237,6 +243,7 @@ def gather_pin():
     return twiml_response(resp)
 
 
+# ====================== CONFIRM & HANDLE ======================
 @app.route("/confirm_pin", methods=['POST'])
 def confirm_pin():
     digits = request.values.get('Digits', '').strip()
