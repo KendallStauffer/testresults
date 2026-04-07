@@ -148,14 +148,14 @@ def voice():
     gather = Gather(
         action="/gather_pin",
         num_digits=6,
-        timeout=10,
+        timeout=8,
         finish_on_key="#",
         input="dtmf speech",
-        speech_timeout=3,
+        speech_timeout=3,                    # as you requested
         language="en-US",
         speech_model="numbers_and_commands",
         enhanced="true",
-        hints="0 1 2 3 4 5 6 7 8 9",   # Added hints as you suggested
+        hints="0 1 2 3 4 5 6 7 8 9",
         barge_in="true"
     )
     gather.say("Please say or enter your 6 digit PIN.", 
@@ -203,7 +203,7 @@ def gather_pin():
         gather = Gather(
             action="/gather_pin",
             num_digits=6,
-            timeout=10,
+            timeout=8,
             finish_on_key="#",
             input="dtmf speech",
             speech_timeout=3,
