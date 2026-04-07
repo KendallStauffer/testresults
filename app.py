@@ -168,19 +168,19 @@ def voice():
 
 @app.route("/gather_pin", methods=['POST'])
 def gather_pin():
+    # Fix: Define call_sid first
+    call_sid = request.values.get('CallSid')
+
     # Correct priority: Digits (keypad) first, then SpeechResult
     digits = request.values.get('Digits', '').strip()
     speech = request.values.get('SpeechResult', '').strip()
     
-    # Use Digits if available (preferred for numbers), otherwise use SpeechResult
     raw = digits if digits else speech
-    
     print(f"Raw input received - Digits='{digits}', Speech='{speech}', Using='{raw}'")
 
     # Strong cleaning
     pin = ''.join(filter(str.isdigit, raw))
 
-    # If still not 6 digits and we have speech, try word conversion
     if len(pin) != 6 and speech:
         word_map = {
             "zero": "0", "oh": "0", "o": "0",
@@ -192,7 +192,6 @@ def gather_pin():
         converted = [word_map.get(w, '') for w in words]
         pin = ''.join(converted)
 
-    # Final fallback: take last 6 digits if too many
     if len(pin) > 6:
         pin = pin[-6:]
 
