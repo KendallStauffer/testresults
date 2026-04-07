@@ -29,7 +29,7 @@ def voice():
     if call_sid not in active_pins:
         resp.say("Thank you for calling the Milk Market Administrator Test Results Center.", 
                  voice="Polly.Joanna", language="en-US")
-        resp.pause(length=0.5)
+        resp.pause(length=0.3)
         active_pins[call_sid] = {"pin": None}
 
     # Single place to ask for PIN
@@ -131,7 +131,7 @@ def confirm_pin():
 
     if results_df.empty:
         resp.say("Sorry, no results were found for that PIN.", voice="Polly.Joanna", language="en-US")
-        resp.pause(length=0.6)
+        resp.pause(length=0.3)
         resp.say("Let's try again. Please say or enter your 6 digit PIN.", voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
         return str(resp)
@@ -150,7 +150,7 @@ def confirm_pin():
             day = int(row['day'])
             year = 2023
 
-        resp.pause(length=0.5)
+        resp.pause(length=0.3)
         if is_first:
             resp.say(f"First sample dated {month_name} {day}, {year}.", voice="Polly.Joanna", language="en-US")
             is_first = False
@@ -160,11 +160,12 @@ def confirm_pin():
         resp.say(f"Butterfat {row['fat']} percent.", voice="Polly.Joanna", language="en-US")
         resp.say(f"Protein {row['protein']} percent.", voice="Polly.Joanna", language="en-US")
         resp.say(f"Somatic cell count {int(row['scc']):,}.", voice="Polly.Joanna", language="en-US")
-        
+       resp.pause(length=0.1)
+
         if int(row.get('mun', 0)) > 0:
             resp.say(f"Munn {int(row['mun'])}.", voice="Polly.Joanna", language="en-US")
 
-        resp.pause(length=0.7)
+        resp.pause(length=0.3)
 
     gather = Gather(action="/handle_action", num_digits=1, timeout=10)
     gather.say("To repeat these results, press 1. To end the call, press 2.", 
