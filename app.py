@@ -6,7 +6,7 @@ import logging
 
 app = Flask(__name__)
 
-# ====================== LOGGING SETUP ======================
+# ====================== LOGGING ======================
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)s | %(message)s',
@@ -18,6 +18,7 @@ active_pins = {}
 
 logger.info("🚀 Starting Milk Test Results Voice App...")
 
+# Load CSV
 print("Loading milk test results...")
 try:
     df = pd.read_csv("test_results_long.csv")
@@ -33,7 +34,6 @@ def speak_pin_digits(pin: str):
 def twiml_response(resp: VoiceResponse):
     return Response(str(resp), mimetype="text/xml")
 
-# Helper to log important events with call context
 def log_call(event: str, extra: dict = None):
     if extra is None:
         extra = {}
@@ -42,7 +42,7 @@ def log_call(event: str, extra: dict = None):
     details = " | ".join(f"{k}={v}" for k, v in extra.items()) if extra else ""
     logger.info(f"{event} | CallSid={call_sid} | From={from_number} {details}")
 
-# ====================== ROUTES ======================
+# ====================== VOICE ROUTES ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
@@ -81,25 +81,26 @@ def gather_pin():
     call_sid = request.values.get('CallSid')
 
     raw = digits if digits else speech
+    print(f"Raw input received: '{raw}'")
+
+    # Improved cleaning to handle speech artifacts like "200000.  81."
     pin = ''.join(filter(str.isdigit, raw))
 
-    if len(pin) < 6 and speech:
-        word_to_digit = {
-            "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3",
-            "four": "4", "five": "5", "six": "6", "seven": "7",
-            "eight": "8", "nine": "9"
-        }
-        spoken = speech.lower().split()
-        extra = ''.join(word_to_digit.get(w, '') for w in spoken)
-        if extra:
-            pin = (pin + extra)[:6]
+    # Extra cleanup for common speech recognition issues
+    if len(pin) != 6 and speech:
+        cleaned_speech = speech.replace("point", "").replace(".", "").replace(",", "").replace(" ", "")
+        pin = ''.join(filter(str.isdigit, cleaned_speech))
+
+    # Safety: if more than 6 digits were heard, take only the first 6
+    if len(pin) > 6:
+        pin = pin[:6]
 
     log_call("PIN_ATTEMPT", {"raw": raw, "cleaned": pin, "length": len(pin)})
 
     resp = VoiceResponse()
 
     if len(pin) != 6:
-        log_call("PIN_INVALID")
+        log_call("PIN_INVALID", {"reason": f"length={len(pin)}"})
         resp.say("Let's try again. Please say or enter your 6 digit PIN.", 
                  voice="Polly.Joanna", language="en-US")
         gather = Gather(
@@ -108,7 +109,7 @@ def gather_pin():
             timeout=15,
             finish_on_key="#",
             input="dtmf speech",
-            speech_timeout=4,
+            speech_timeout=5,
             language="en-US",
             speech_model="phone_call",
             barge_in="true"
@@ -118,6 +119,7 @@ def gather_pin():
         resp.append(gather)
         return twiml_response(resp)
 
+    # PIN is valid - proceed
     active_pins[call_sid] = {"pin": pin}
     log_call("PIN_ACCEPTED", {"pin": pin})
 
@@ -146,10 +148,10 @@ def confirm_pin():
     speech = request.values.get('SpeechResult', '').strip().lower()
     call_sid = request.values.get('CallSid')
 
+    resp = VoiceResponse()
+
     is_yes = digits == "1" or any(word in speech for word in ["yes", "yeah", "correct", "right", "yep"])
     log_call("CONFIRMATION", {"input": speech or digits, "is_yes": is_yes})
-
-    resp = VoiceResponse()
 
     if not is_yes:
         resp.say("Okay, let's try again.", voice="Polly.Joanna", language="en-US")
