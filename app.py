@@ -77,18 +77,13 @@ def status():
         </html>
     ''', record_count=record_count, last_upload_time=last_upload_time)
 
-
 @app.route("/upload", methods=['GET', 'POST'])
 def upload_csv():
     if request.method == 'POST':
         password = request.form.get('password', '').strip()
 
         if password != UPLOAD_PASSWORD:
-            return """
-            <h2>❌ Incorrect Password</h2>
-            <p>Please try again.</p>
-            <p><a href="/upload">Back to Upload</a></p>
-            """, 401
+            return "<h2>❌ Incorrect Password</h2><p><a href='/upload'>Try again</a></p>", 401
 
         if 'file' not in request.files:
             return "<h2>❌ No file uploaded</h2>", 400
@@ -97,28 +92,22 @@ def upload_csv():
         if file.filename == '' or not file.filename.lower().endswith('.csv'):
             return "<h2>❌ Please upload a valid .csv file</h2>", 400
 
-        # Backup old file
         if os.path.exists(CSV_PATH):
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             shutil.copy(CSV_PATH, f"{BACKUP_DIR}/test_results_long_{timestamp}.csv")
 
-        # Save new file
         file.save(CSV_PATH)
-        logger.info("New CSV uploaded successfully")
+        logger.info("New CSV uploaded")
 
-        # Reload data
         if load_data():
-            record_count = len(df) if not df.empty else 0
             return f"""
             <h2>✅ Upload Successful!</h2>
-            <p>New data loaded with <strong>{record_count}</strong> records.</p>
-            <p>Last updated: {last_upload_time}</p>
+            <p>New data loaded with <strong>{len(df)}</strong> records.</p>
             <p><a href="/upload">Upload another file</a> | <a href="/status">View Status</a></p>
             """
         else:
-            return "<h2>⚠️ File uploaded but failed to load data.</h2>", 500
+            return "<h2>⚠️ File uploaded but failed to load.</h2>", 400
 
-    # Show upload form
     record_count = len(df) if not df.empty else 0
     return render_template_string('''
         <!DOCTYPE html>
@@ -131,23 +120,21 @@ def upload_csv():
             
             <form method="post" enctype="multipart/form-data">
                 <p><strong>Enter Password:</strong><br>
-                <input type="password" name="password" required style="width:100%; padding:8px; margin-bottom:10px;"></p>
+                <input type="password" name="password" required style="width:100%; padding:8px;"></p>
                 
-                <p><strong>Select CSV File:</strong><br>
+                <p><strong>Select New CSV File:</strong><br>
                 <input type="file" name="file" accept=".csv" required></p>
                 
-                <p><button type="submit" style="padding:10px 20px; font-size:16px;">Upload New Data File</button></p>
+                <p><button type="submit" style="padding:10px 20px; font-size:16px;">Upload CSV File</button></p>
             </form>
             
-            <p>Current records in system: <strong>{{ record_count }}</strong></p>
+            <p>Current records: <strong>{{ record_count }}</strong></p>
             <p><a href="/status">View System Status</a></p>
         </body>
         </html>
     ''', record_count=record_count)
 
-
 # ====================== VOICE ROUTES ======================
-# (Your voice code remains the same as the last working version)
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
@@ -168,7 +155,8 @@ def voice():
         input="dtmf speech",
         speech_timeout=4,
         language="en-US",
-        speech_model="phone_call",
+        speech_model="numbers_and_commands",   # Better for digits
+        enhanced="true",                       # Higher accuracy model
         barge_in="true"
     )
     gather.say("Please say or enter your 6 digit PIN.", 
@@ -186,18 +174,15 @@ def gather_pin():
     call_sid = request.values.get('CallSid')
 
     raw = digits if digits else speech
-    pin = ''.join(filter(str.isdigit, raw))
+    print(f"Raw input received: '{raw}'")
 
-    if len(pin) < 6 and speech:
-        word_to_digit = {"zero":"0","oh":"0","one":"1","two":"2","three":"3","four":"4","five":"5",
-                         "six":"6","seven":"7","eight":"8","nine":"9"}
-        spoken = speech.lower().split()
-        extra = ''.join(word_to_digit.get(w, '') for w in spoken)
-        if extra:
-            pin = (pin + extra)[:6]
+    # Strong cleaning for numbers
+    cleaned = raw.replace("point", "").replace(".", "").replace(",", "").replace(" ", "")
+    pin = ''.join(filter(str.isdigit, cleaned))
 
+    # Take last 6 digits if more than 6 were detected
     if len(pin) > 6:
-        pin = pin[:6]
+        pin = pin[-6:]
 
     log_call("PIN_ATTEMPT", {"raw": raw, "cleaned": pin, "length": len(pin)})
 
@@ -215,7 +200,8 @@ def gather_pin():
             input="dtmf speech",
             speech_timeout=5,
             language="en-US",
-            speech_model="phone_call",
+            speech_model="numbers_and_commands",
+            enhanced="true",
             barge_in="true"
         )
         gather.say("Please say or enter your 6 digit PIN.", 
