@@ -61,13 +61,9 @@ def gather_pin():
     raw = digits if digits else speech
     pin = ''.join(filter(str.isdigit, raw))
 
-    # Improved cleaning for spoken PINs
     if len(pin) < 6 and speech:
-        word_to_digit = {
-            "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3",
-            "four": "4", "five": "5", "six": "6", "seven": "7",
-            "eight": "8", "nine": "9"
-        }
+        word_to_digit = {"zero":"0","oh":"0","one":"1","two":"2","three":"3","four":"4","five":"5",
+                         "six":"6","seven":"7","eight":"8","nine":"9"}
         spoken = speech.lower().split()
         extra = ''.join(word_to_digit.get(w, '') for w in spoken)
         if extra:
@@ -145,11 +141,14 @@ def confirm_pin():
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
 
     if results_df.empty:
-        resp.say("Sorry, no results were found for that PIN.", voice="Polly.Joanna", language="en-US")
-        resp.pause(length=1)
-        resp.say("Let's try again. Please say or enter your 6 digit PIN.", voice="Polly.Joanna", language="en-US")
+        resp.say("Sorry, no results were found for that PIN. Let's try again.", 
+                 voice="Polly.Joanna", language="en-US")
+        # No extra pause or repeat prompt here — redirect will handle it
         resp.redirect("/voice")
         return twiml_response(resp)
+
+    # === Results found - speak them ===
+    resp.say("Here are your milk test results.", voice="Polly.Joanna", language="en-US")
 
     is_first = True
     for _, row in results_df.iterrows():
@@ -164,12 +163,12 @@ def confirm_pin():
             day = int(row['day'])
             year = 2023
 
-        resp.pause(length=1)
+        resp.pause(length=0.8)          # Shorter pause as requested
         if is_first:
             resp.say(f"First sample dated {month_name} {day}, {year}.", voice="Polly.Joanna", language="en-US")
             is_first = False
         else:
-            resp.say(f"The next sample dated {month_name} {day}.", voice="Polly.Joanna", language="en-US")
+            resp.say(f"Next sample dated {month_name} {day}.", voice="Polly.Joanna", language="en-US")
 
         resp.say(f"Butterfat {row['fat']} percent.", voice="Polly.Joanna", language="en-US")
         resp.say(f"Protein {row['protein']} percent.", voice="Polly.Joanna", language="en-US")
@@ -178,7 +177,7 @@ def confirm_pin():
         if int(row.get('mun', 0)) > 0:
             resp.say(f"Munn {int(row['mun'])}.", voice="Polly.Joanna", language="en-US")
 
-        resp.pause(length=1)
+        resp.pause(length=0.8)          # Shorter pause
 
     gather = Gather(action="/handle_action", num_digits=1, timeout=10)
     gather.say("To repeat these results, say repeat or press 1. To end the call, say goodbye or press 2.", 
