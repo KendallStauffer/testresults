@@ -153,7 +153,7 @@ def voice():
         input="dtmf speech",
         speech_timeout=3,
         language="en-US",
-        speech_model="numbers_and_commands",
+        speech_model="numbers",
         enhanced="true",
         hints="0 1 2 3 4 5 6 7 8 9",
         barge_in="true"
