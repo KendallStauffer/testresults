@@ -168,19 +168,21 @@ def voice():
 
 @app.route("/gather_pin", methods=['POST'])
 def gather_pin():
-    # Fix: Define call_sid first
     call_sid = request.values.get('CallSid')
 
-    # Correct priority: Digits (keypad) first, then SpeechResult
     digits = request.values.get('Digits', '').strip()
     speech = request.values.get('SpeechResult', '').strip()
     
     raw = digits if digits else speech
     print(f"Raw input received - Digits='{digits}', Speech='{speech}', Using='{raw}'")
 
-    # Strong cleaning
-    pin = ''.join(filter(str.isdigit, raw))
+    # === STRONG CLEANING ===
+    # Replace common zero representations
+    cleaned = raw.replace("O", "0").replace("o", "0").replace("point", "").replace(".", "").replace(",", "").replace(" ", "")
 
+    pin = ''.join(filter(str.isdigit, cleaned))
+
+    # Word conversion if still not 6 digits
     if len(pin) != 6 and speech:
         word_map = {
             "zero": "0", "oh": "0", "o": "0",
@@ -188,12 +190,15 @@ def gather_pin():
             "four": "4", "five": "5", "six": "6",
             "seven": "7", "eight": "8", "nine": "9"
         }
-        words = speech.lower().split()
+        words = speech.lower().replace(",", " ").split()
         converted = [word_map.get(w, '') for w in words]
         pin = ''.join(converted)
 
-    if len(pin) > 6:
-        pin = pin[-6:]
+    # Final fallback: take last 6 digits
+    if len(pin) != 6:
+        all_digits = ''.join(filter(str.isdigit, raw.replace("O", "0").replace("o", "0")))
+        if len(all_digits) >= 6:
+            pin = all_digits[-6:]
 
     log_call("PIN_ATTEMPT", {"raw": raw, "cleaned": pin, "length": len(pin), "source": "Digits" if digits else "Speech"})
 
