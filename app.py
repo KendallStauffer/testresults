@@ -30,22 +30,21 @@ def voice():
     if call_sid not in active_pins:
         resp.say("Thank you for calling the Milk Market Administrator Test Results Center.", 
                  voice="Polly.Joanna", language="en-US")
-        resp.pause(length=1)                    # fixed
+        resp.pause(length=1)
         active_pins[call_sid] = {"pin": None}
 
     gather = Gather(
         action="/gather_pin",
         num_digits=6,
-        timeout=18,
+        timeout=15,
         finish_on_key="#",
         input="dtmf speech",
-        speech_timeout=4,                       # better for spoken digits
+        speech_timeout=4,
         language="en-US",
         speech_model="phone_call",
-        hints="$OOV_CLASS_DIGIT_SEQUENCE",      # helps number recognition
         barge_in="true"
     )
-    gather.say("Please say or enter your 6 digit PIN. Say the digits one by one slowly, for example: one two three four five six, then press the pound key. Or type it on your keypad and press pound.", 
+    gather.say("Please say or enter your 6 digit PIN.", 
                voice="Polly.Joanna", language="en-US")
     resp.append(gather)
 
@@ -62,17 +61,19 @@ def gather_pin():
     raw = digits if digits else speech
     pin = ''.join(filter(str.isdigit, raw))
 
-    # Extra help for voice input
+    # Improved cleaning for spoken PINs
     if len(pin) < 6 and speech:
-        word_to_digit = {"zero":"0","oh":"0","one":"1","two":"2","three":"3","four":"4","five":"5",
-                         "six":"6","seven":"7","eight":"8","nine":"9"}
+        word_to_digit = {
+            "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3",
+            "four": "4", "five": "5", "six": "6", "seven": "7",
+            "eight": "8", "nine": "9"
+        }
         spoken = speech.lower().split()
         extra = ''.join(word_to_digit.get(w, '') for w in spoken)
         if extra:
             pin = (pin + extra)[:6]
-            print(f"Spoken conversion: '{speech}' → '{pin}'")
 
-    print(f"Raw: '{raw}' → Final PIN: '{pin}'")
+    print(f"Raw: '{raw}' → Cleaned PIN: '{pin}' (length: {len(pin)})")
 
     resp = VoiceResponse()
 
@@ -82,33 +83,32 @@ def gather_pin():
         gather = Gather(
             action="/gather_pin",
             num_digits=6,
-            timeout=18,
+            timeout=15,
             finish_on_key="#",
             input="dtmf speech",
             speech_timeout=4,
             language="en-US",
             speech_model="phone_call",
-            hints="$OOV_CLASS_DIGIT_SEQUENCE",
             barge_in="true"
         )
-        gather.say("Please say or enter your 6 digit PIN. Say the digits one by one slowly, then press the pound key.", 
+        gather.say("Please say or enter your 6 digit PIN.", 
                    voice="Polly.Joanna", language="en-US")
         resp.append(gather)
         return twiml_response(resp)
 
     active_pins[call_sid] = {"pin": pin}
 
-    resp.pause(length=1)                        # fixed
+    resp.pause(length=1)
     spoken_pin = speak_pin_digits(pin)
     resp.say(f"Am I right with {spoken_pin}?", voice="Polly.Joanna", language="en-US")
-    resp.pause(length=1)                        # fixed
+    resp.pause(length=1)
 
     gather = Gather(
         action="/confirm_pin",
         num_digits=1,
         timeout=10,
         input="dtmf speech",
-        speech_timeout=3,
+        speech_timeout="auto",
         language="en-US",
         barge_in="true"
     )
@@ -146,7 +146,7 @@ def confirm_pin():
 
     if results_df.empty:
         resp.say("Sorry, no results were found for that PIN.", voice="Polly.Joanna", language="en-US")
-        resp.pause(length=1)                    # fixed
+        resp.pause(length=1)
         resp.say("Let's try again. Please say or enter your 6 digit PIN.", voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
         return twiml_response(resp)
@@ -164,7 +164,7 @@ def confirm_pin():
             day = int(row['day'])
             year = 2023
 
-        resp.pause(length=1)                    # fixed
+        resp.pause(length=1)
         if is_first:
             resp.say(f"First sample dated {month_name} {day}, {year}.", voice="Polly.Joanna", language="en-US")
             is_first = False
@@ -178,7 +178,7 @@ def confirm_pin():
         if int(row.get('mun', 0)) > 0:
             resp.say(f"Munn {int(row['mun'])}.", voice="Polly.Joanna", language="en-US")
 
-        resp.pause(length=1)                    # fixed
+        resp.pause(length=1)
 
     gather = Gather(action="/handle_action", num_digits=1, timeout=10)
     gather.say("To repeat these results, say repeat or press 1. To end the call, say goodbye or press 2.", 
