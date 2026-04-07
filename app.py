@@ -147,18 +147,18 @@ def voice():
 
     gather = Gather(
         action="/gather_pin",
-        num_digits=6,
+        num_digits=6,                    # Auto-submit after 6 digits
         timeout=8,
         finish_on_key="#",
         input="dtmf speech",
-        speech_timeout=3,                    # as you requested
+        speech_timeout=3,
         language="en-US",
         speech_model="numbers_and_commands",
         enhanced="true",
         hints="0 1 2 3 4 5 6 7 8 9",
         barge_in="true"
     )
-    gather.say("Please say or enter your 6 digit PIN.", 
+    gather.say("Please enter your 6 digit PIN.", 
                voice="Polly.Joanna", language="en-US")
     resp.append(gather)
 
@@ -198,7 +198,7 @@ def gather_pin():
 
     if len(pin) != 6:
         log_call("PIN_INVALID")
-        resp.say("Let's try again. Please say or enter your 6 digit PIN.", 
+        resp.say("Let's try again. Please enter your 6 digit PIN.", 
                  voice="Polly.Joanna", language="en-US")
         gather = Gather(
             action="/gather_pin",
@@ -213,7 +213,7 @@ def gather_pin():
             hints="0 1 2 3 4 5 6 7 8 9",
             barge_in="true"
         )
-        gather.say("Please say or enter your 6 digit PIN.", 
+        gather.say("Please enter your 6 digit PIN.", 
                    voice="Polly.Joanna", language="en-US")
         resp.append(gather)
         return twiml_response(resp)
