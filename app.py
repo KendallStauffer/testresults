@@ -168,17 +168,19 @@ def voice():
 
 @app.route("/gather_pin", methods=['POST'])
 def gather_pin():
+    # Correct priority: Digits (keypad) first, then SpeechResult
     digits = request.values.get('Digits', '').strip()
     speech = request.values.get('SpeechResult', '').strip()
-    call_sid = request.values.get('CallSid')
-
+    
+    # Use Digits if available (preferred for numbers), otherwise use SpeechResult
     raw = digits if digits else speech
-    print(f"Raw input received: '{raw}'")
+    
+    print(f"Raw input received - Digits='{digits}', Speech='{speech}', Using='{raw}'")
 
-    # === STRONGEST CLEANING FOR MIXED INPUT ===
+    # Strong cleaning
     pin = ''.join(filter(str.isdigit, raw))
 
-    # If not 6 digits, try full word conversion
+    # If still not 6 digits and we have speech, try word conversion
     if len(pin) != 6 and speech:
         word_map = {
             "zero": "0", "oh": "0", "o": "0",
@@ -190,13 +192,11 @@ def gather_pin():
         converted = [word_map.get(w, '') for w in words]
         pin = ''.join(converted)
 
-    # Final fallback: extract ALL digits from raw input and take last 6
-    if len(pin) != 6:
-        all_digits = ''.join(filter(str.isdigit, raw))
-        if len(all_digits) >= 6:
-            pin = all_digits[-6:]   # take the last 6 digits
+    # Final fallback: take last 6 digits if too many
+    if len(pin) > 6:
+        pin = pin[-6:]
 
-    log_call("PIN_ATTEMPT", {"raw": raw, "cleaned": pin, "length": len(pin)})
+    log_call("PIN_ATTEMPT", {"raw": raw, "cleaned": pin, "length": len(pin), "source": "Digits" if digits else "Speech"})
 
     resp = VoiceResponse()
 
@@ -245,7 +245,6 @@ def gather_pin():
     return twiml_response(resp)
 
 
-# ====================== CONFIRM & HANDLE ======================
 @app.route("/confirm_pin", methods=['POST'])
 def confirm_pin():
     digits = request.values.get('Digits', '').strip()
