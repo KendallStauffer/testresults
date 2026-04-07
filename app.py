@@ -61,9 +61,13 @@ def gather_pin():
     raw = digits if digits else speech
     pin = ''.join(filter(str.isdigit, raw))
 
+    # Help with spoken digits
     if len(pin) < 6 and speech:
-        word_to_digit = {"zero":"0","oh":"0","one":"1","two":"2","three":"3","four":"4","five":"5",
-                         "six":"6","seven":"7","eight":"8","nine":"9"}
+        word_to_digit = {
+            "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3",
+            "four": "4", "five": "5", "six": "6", "seven": "7",
+            "eight": "8", "nine": "9"
+        }
         spoken = speech.lower().split()
         extra = ''.join(word_to_digit.get(w, '') for w in spoken)
         if extra:
@@ -143,11 +147,10 @@ def confirm_pin():
     if results_df.empty:
         resp.say("Sorry, no results were found for that PIN. Let's try again.", 
                  voice="Polly.Joanna", language="en-US")
-        # No extra pause or repeat prompt here — redirect will handle it
         resp.redirect("/voice")
         return twiml_response(resp)
 
-    # === Results found - speak them ===
+    # Results found
     resp.say("Here are your milk test results.", voice="Polly.Joanna", language="en-US")
 
     is_first = True
@@ -163,7 +166,7 @@ def confirm_pin():
             day = int(row['day'])
             year = 2023
 
-        resp.pause(length=0.8)          # Shorter pause as requested
+        resp.pause(length=1)
         if is_first:
             resp.say(f"First sample dated {month_name} {day}, {year}.", voice="Polly.Joanna", language="en-US")
             is_first = False
@@ -177,7 +180,7 @@ def confirm_pin():
         if int(row.get('mun', 0)) > 0:
             resp.say(f"Munn {int(row['mun'])}.", voice="Polly.Joanna", language="en-US")
 
-        resp.pause(length=0.8)          # Shorter pause
+        resp.pause(length=1)
 
     gather = Gather(action="/handle_action", num_digits=1, timeout=10)
     gather.say("To repeat these results, say repeat or press 1. To end the call, say goodbye or press 2.", 
