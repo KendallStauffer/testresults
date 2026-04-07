@@ -155,6 +155,7 @@ def voice():
         language="en-US",
         speech_model="numbers_and_commands",
         enhanced="true",
+        hints="0 1 2 3 4 5 6 7 8 9",   # Added hints as you suggested
         barge_in="true"
     )
     gather.say("Please say or enter your 6 digit PIN.", 
@@ -174,10 +175,9 @@ def gather_pin():
     raw = digits if digits else speech
     print(f"Raw input received: '{raw}'")
 
-    # === STRONGEST CLEANING LOGIC ===
+    # Strong cleaning
     pin = ''.join(filter(str.isdigit, raw))
 
-    # If we don't have 6 digits, try full word conversion
     if len(pin) != 6 and speech:
         word_map = {
             "zero": "0", "oh": "0", "o": "0",
@@ -185,12 +185,10 @@ def gather_pin():
             "four": "4", "five": "5", "six": "6",
             "seven": "7", "eight": "8", "nine": "9"
         }
-        # Convert to lowercase and split
         words = speech.lower().split()
         converted = [word_map.get(w, '') for w in words]
         pin = ''.join(converted)
 
-    # Final fallback: take the last 6 digits if we have more
     if len(pin) > 6:
         pin = pin[-6:]
 
@@ -212,6 +210,7 @@ def gather_pin():
             language="en-US",
             speech_model="numbers_and_commands",
             enhanced="true",
+            hints="0 1 2 3 4 5 6 7 8 9",
             barge_in="true"
         )
         gather.say("Please say or enter your 6 digit PIN.", 
@@ -219,7 +218,6 @@ def gather_pin():
         resp.append(gather)
         return twiml_response(resp)
 
-    # Success
     active_pins[call_sid] = {"pin": pin}
     log_call("PIN_ACCEPTED", {"pin": pin})
 
