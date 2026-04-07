@@ -63,7 +63,7 @@ def gather_pin():
     resp = VoiceResponse()
 
     if len(pin) != 6:
-        resp.say("Let's try again. Please say or enter your 6 digit PIN.", 
+        resp.say("Let's try again.", 
                  voice="Polly.Joanna", language="en-US")
         # Stay in the same flow - ask again directly
         gather = Gather(
@@ -132,7 +132,7 @@ def confirm_pin():
     if results_df.empty:
         resp.say("Sorry, no results were found for that PIN.", voice="Polly.Joanna", language="en-US")
         resp.pause(length=0.6)
-        resp.say("Let's try again. Please say or enter your 6 digit PIN.", voice="Polly.Joanna", language="en-US")
+        resp.say("Let's try again. ", voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
         return str(resp)
 
