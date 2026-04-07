@@ -5,7 +5,7 @@ import os
 
 app = Flask(__name__)
 
-active_pins = {}   # Store PIN per call
+active_pins = {}
 
 print("Loading milk test results...")
 try:
@@ -19,20 +19,18 @@ except Exception as e:
 def speak_pin_digits(pin: str):
     return " ".join(pin)
 
-# ====================== MAIN ENTRY POINT ======================
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
     call_sid = request.values.get('CallSid')
     resp = VoiceResponse()
 
-    # Play greeting only the first time
     if call_sid not in active_pins:
         resp.say("Thank you for calling the Milk Market Administrator Test Results Center.", 
                  voice="Polly.Joanna", language="en-US")
         resp.pause(length=0.3)
         active_pins[call_sid] = {"pin": None}
 
-    # Single place to ask for PIN
+    # Only one place that says the prompt (inside Gather)
     gather = Gather(
         action="/gather_pin",
         num_digits=6,
@@ -63,9 +61,8 @@ def gather_pin():
     resp = VoiceResponse()
 
     if len(pin) != 6:
-        resp.say("Let's try again. Please say or enter your 6 digit PIN.", 
-                 voice="Polly.Joanna", language="en-US")
-        # Stay in the same flow - ask again directly
+        resp.say("Let's try again.", voice="Polly.Joanna", language="en-US")
+        # Directly ask again without repeating the full message
         gather = Gather(
             action="/gather_pin",
             num_digits=6,
@@ -80,10 +77,9 @@ def gather_pin():
         resp.append(gather)
         return str(resp)
 
-    # Store PIN
     active_pins[call_sid] = {"pin": pin}
 
-    resp.pause(length=0.2)
+    resp.pause(length=0.3)
     spoken_pin = speak_pin_digits(pin)
     resp.say(f"Am I right with {spoken_pin}?", voice="Polly.Joanna", language="en-US")
     resp.pause(length=0.3)
@@ -124,7 +120,7 @@ def confirm_pin():
         resp.redirect("/voice")
         return str(resp)
 
-    # Read results immediately
+    # Read results
     resp.say("Thank you. Here are your milk test results.", voice="Polly.Joanna", language="en-US")
 
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
@@ -132,11 +128,11 @@ def confirm_pin():
     if results_df.empty:
         resp.say("Sorry, no results were found for that PIN.", voice="Polly.Joanna", language="en-US")
         resp.pause(length=0.3)
-        resp.say("Let's try again. Please say or enter your 6 digit PIN.", voice="Polly.Joanna", language="en-US")
+        resp.say("Let's try again.", voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
         return str(resp)
 
-    # Read the actual results
+    # Read the results
     is_first = True
     for _, row in results_df.iterrows():
         try:
@@ -160,8 +156,8 @@ def confirm_pin():
         resp.say(f"Butterfat {row['fat']} percent.", voice="Polly.Joanna", language="en-US")
         resp.say(f"Protein {row['protein']} percent.", voice="Polly.Joanna", language="en-US")
         resp.say(f"Somatic cell count {int(row['scc']):,}.", voice="Polly.Joanna", language="en-US")
-       resp.pause(length=0.1)
-
+        
+        resp.pause(length=0.1)
         if int(row.get('mun', 0)) > 0:
             resp.say(f"Munn {int(row['mun'])}.", voice="Polly.Joanna", language="en-US")
 
