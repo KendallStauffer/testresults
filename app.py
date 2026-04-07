@@ -1,10 +1,21 @@
-from flask import Flask, request, Response
+from flask import Flask, request, Response, render_template_string
 from twilio.twiml.voice_response import VoiceResponse, Gather
 import pandas as pd
 import os
 import logging
+import shutil
+from datetime import datetime
 
 app = Flask(__name__)
+
+# ====================== CONFIG ======================
+UPLOAD_USERNAME = "MMAadmin"
+UPLOAD_PASSWORD = "ForUSDA!2026"
+
+CSV_PATH = "test_results_long.csv"
+BACKUP_DIR = "backups"
+
+os.makedirs(BACKUP_DIR, exist_ok=True)
 
 # ====================== LOGGING ======================
 logging.basicConfig(
@@ -15,18 +26,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 active_pins = {}
+df = pd.DataFrame()
+last_upload_time = "Never"
 
-logger.info("🚀 Starting Milk Test Results Voice App...")
+# Load data function
+def load_data():
+    global df, last_upload_time
+    try:
+        if os.path.exists(CSV_PATH):
+            df = pd.read_csv(CSV_PATH)
+            df['Pin_Number'] = df['Pin_Number'].astype(str).str.strip().str.zfill(6)
+            last_upload_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            logger.info(f"✅ Loaded {len(df)} records")
+            return True
+        logger.warning("CSV file not found")
+        return False
+    except Exception as e:
+        logger.error(f"Failed to load CSV: {e}")
+        return False
 
-# Load CSV
-print("Loading milk test results...")
-try:
-    df = pd.read_csv("test_results_long.csv")
-    df['Pin_Number'] = df['Pin_Number'].astype(str).str.strip().str.zfill(6)
-    logger.info(f"✅ Successfully loaded {len(df)} records.")
-except Exception as e:
-    logger.error(f"❌ Failed to load CSV: {e}")
-    df = pd.DataFrame()
+load_data()
 
 def speak_pin_digits(pin: str):
     return " ".join(pin)
@@ -35,12 +54,90 @@ def twiml_response(resp: VoiceResponse):
     return Response(str(resp), mimetype="text/xml")
 
 def log_call(event: str, extra: dict = None):
-    if extra is None:
-        extra = {}
+    if extra is None: extra = {}
     call_sid = request.values.get('CallSid', 'unknown')
     from_number = request.values.get('From', 'unknown')
     details = " | ".join(f"{k}={v}" for k, v in extra.items()) if extra else ""
     logger.info(f"{event} | CallSid={call_sid} | From={from_number} {details}")
+
+# ====================== ADMIN PAGES ======================
+
+@app.route("/status")
+def status():
+    return render_template_string('''
+        <!DOCTYPE html>
+        <html>
+        <head><title>MMA System Status</title></head>
+        <body style="font-family: Arial; margin: 40px;">
+            <h2>Milk Market Administrator - System Status</h2>
+            <p><strong>Current Records:</strong> {{ len(df) if not df.empty else 0 }}</p>
+            <p><strong>Last Data Upload:</strong> {{ last_upload_time }}</p>
+            <hr>
+            <p><a href="/upload">Upload New Data File</a></p>
+        </body>
+        </html>
+    ''', df=df, last_upload_time=last_upload_time)
+
+@app.route("/upload", methods=['GET', 'POST'])
+def upload_csv():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+
+        if username != UPLOAD_USERNAME or password != UPLOAD_PASSWORD:
+            return "<h2>❌ Incorrect username or password</h2><p><a href='/upload'>Try again</a></p>", 401
+
+        if 'file' not in request.files:
+            return "<h2>❌ No file uploaded</h2>", 400
+
+        file = request.files['file']
+        if file.filename == '' or not file.filename.lower().endswith('.csv'):
+            return "<h2>❌ Please upload a valid .csv file</h2>", 400
+
+        # Backup old file
+        if os.path.exists(CSV_PATH):
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            shutil.copy(CSV_PATH, f"{BACKUP_DIR}/test_results_long_{timestamp}.csv")
+
+        # Save new file
+        file.save(CSV_PATH)
+        logger.info(f"New CSV uploaded by {username}")
+
+        # Reload data
+        if load_data():
+            return f"""
+            <h2>✅ Upload Successful!</h2>
+            <p>New data loaded with <strong>{len(df)}</strong> records.</p>
+            <p>Last updated: {last_upload_time}</p>
+            <p><a href="/upload">Upload another file</a> | <a href="/status">View Status</a></p>
+            """
+        else:
+            return "<h2>⚠️ File uploaded but failed to load data.</h2>", 500
+
+    # Show upload form
+    return render_template_string('''
+        <!DOCTYPE html>
+        <html>
+        <head><title>MMA Data Upload</title></head>
+        <body style="font-family: Arial; max-width: 600px; margin: 40px auto;">
+            <h2>Milk Market Administrator - Data Upload</h2>
+            <p><strong>Username:</strong> MMAadmin</p>
+            
+            <form method="post" enctype="multipart/form-data">
+                <p><strong>Password:</strong><br>
+                <input type="password" name="password" required style="width:100%; padding:8px;"></p>
+                
+                <p><strong>Select New CSV File:</strong><br>
+                <input type="file" name="file" accept=".csv" required></p>
+                
+                <p><button type="submit" style="padding:10px 20px; font-size:16px;">Upload CSV File</button></p>
+            </form>
+            
+            <p>Current records: <strong>{{ len(df) if not df.empty else 0 }}</strong></p>
+            <p><a href="/status">View System Status</a></p>
+        </body>
+        </html>
+    ''', df=df)
 
 # ====================== VOICE ROUTES ======================
 
@@ -81,17 +178,16 @@ def gather_pin():
     call_sid = request.values.get('CallSid')
 
     raw = digits if digits else speech
-    print(f"Raw input received: '{raw}'")
-
-    # Improved cleaning to handle speech artifacts like "200000.  81."
     pin = ''.join(filter(str.isdigit, raw))
 
-    # Extra cleanup for common speech recognition issues
-    if len(pin) != 6 and speech:
-        cleaned_speech = speech.replace("point", "").replace(".", "").replace(",", "").replace(" ", "")
-        pin = ''.join(filter(str.isdigit, cleaned_speech))
+    if len(pin) < 6 and speech:
+        word_to_digit = {"zero":"0","oh":"0","one":"1","two":"2","three":"3","four":"4","five":"5",
+                         "six":"6","seven":"7","eight":"8","nine":"9"}
+        spoken = speech.lower().split()
+        extra = ''.join(word_to_digit.get(w, '') for w in spoken)
+        if extra:
+            pin = (pin + extra)[:6]
 
-    # Safety: if more than 6 digits were heard, take only the first 6
     if len(pin) > 6:
         pin = pin[:6]
 
@@ -100,7 +196,7 @@ def gather_pin():
     resp = VoiceResponse()
 
     if len(pin) != 6:
-        log_call("PIN_INVALID", {"reason": f"length={len(pin)}"})
+        log_call("PIN_INVALID")
         resp.say("Let's try again. Please say or enter your 6 digit PIN.", 
                  voice="Polly.Joanna", language="en-US")
         gather = Gather(
@@ -119,7 +215,6 @@ def gather_pin():
         resp.append(gather)
         return twiml_response(resp)
 
-    # PIN is valid - proceed
     active_pins[call_sid] = {"pin": pin}
     log_call("PIN_ACCEPTED", {"pin": pin})
 
@@ -175,35 +270,20 @@ def confirm_pin():
         resp.redirect("/voice")
         return twiml_response(resp)
 
-    log_call("RESULTS_DELIVERED", {"count": len(results_df)})
     resp.say("Here are your milk test results.", voice="Polly.Joanna", language="en-US")
 
-    is_first = True
     for _, row in results_df.iterrows():
-        try:
-            date_str = str(row['latest_test_date'])
-            year = int(date_str[:4])
-            month_num = int(date_str[5:7])
-            day = int(row['day'])
-            month_name = pd.to_datetime(f"{year}-{month_num:02d}-01").strftime('%B')
-        except:
-            month_name = "the month"
-            day = int(row['day'])
-            year = 2023
+        day = int(row.get('day', 1))
 
         resp.pause(length=1)
-        if is_first:
-            resp.say(f"First sample dated {month_name} {day}, {year}.", voice="Polly.Joanna", language="en-US")
-            is_first = False
-        else:
-            resp.say(f"Next sample dated {month_name} {day}.", voice="Polly.Joanna", language="en-US")
+        resp.say(f"Sample from the {day}th.", voice="Polly.Joanna", language="en-US")
 
-        resp.say(f"Butterfat {row['fat']} percent.", voice="Polly.Joanna", language="en-US")
-        resp.say(f"Protein {row['protein']} percent.", voice="Polly.Joanna", language="en-US")
-        resp.say(f"Somatic cell count {int(row['scc']):,}.", voice="Polly.Joanna", language="en-US")
+        resp.say(f"Butterfat {row.get('fat', 0)} percent.", voice="Polly.Joanna", language="en-US")
+        resp.say(f"Protein {row.get('protein', 0)} percent.", voice="Polly.Joanna", language="en-US")
+        resp.say(f"Somatic cell count {int(row.get('scc', 0)):,}.", voice="Polly.Joanna", language="en-US")
         
         if int(row.get('mun', 0)) > 0:
-            resp.say(f"Munn {int(row['mun'])}.", voice="Polly.Joanna", language="en-US")
+            resp.say(f"Munn {int(row.get('mun', 0))}.", voice="Polly.Joanna", language="en-US")
 
         resp.pause(length=1)
 
