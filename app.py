@@ -2,7 +2,6 @@ from flask import Flask, request, Response
 from twilio.twiml.voice_response import VoiceResponse, Gather
 import pandas as pd
 import os
-import traceback
 
 app = Flask(__name__)
 
@@ -15,17 +14,13 @@ try:
     print(f"✅ Loaded {len(df)} records.")
 except Exception as e:
     print(f"❌ Error loading CSV: {e}")
-    traceback.print_exc()
     df = pd.DataFrame()
 
 def speak_pin_digits(pin: str):
     return " ".join(pin)
 
 def twiml_response(resp: VoiceResponse):
-    """Always return proper text/xml"""
     return Response(str(resp), mimetype="text/xml")
-
-# ====================== ROUTES ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
@@ -34,9 +29,9 @@ def voice():
         resp = VoiceResponse()
 
         if call_sid not in active_pins:
-            resp.say("Thank you for calling the Milk Market Administrator Test Results Center.",
+            resp.say("Thank you for calling the Milk Market Administrator Test Results Center.", 
                      voice="Polly.Joanna", language="en-US")
-            resp.pause(length=1)                    # fixed
+            resp.pause(length=1)          # changed from 0.3
             active_pins[call_sid] = {"pin": None}
 
         gather = Gather(
@@ -48,16 +43,15 @@ def voice():
             speech_timeout="auto",
             barge_in="true"
         )
-        gather.say("Please say or enter your 6 digit PIN.",
+        gather.say("Please say or enter your 6 digit PIN.", 
                    voice="Polly.Joanna", language="en-US")
         resp.append(gather)
 
         resp.say("We didn't receive any input. Goodbye.", voice="Polly.Joanna", language="en-US")
         return twiml_response(resp)
-    except Exception as e:
-        traceback.print_exc()
+    except:
         resp = VoiceResponse()
-        resp.say("System error. Goodbye.", voice="Polly.Joanna", language="en-US")
+        resp.say("Sorry, system error. Goodbye.", voice="Polly.Joanna", language="en-US")
         return twiml_response(resp)
 
 
@@ -75,7 +69,7 @@ def gather_pin():
         resp = VoiceResponse()
 
         if len(pin) != 6:
-            resp.say("Let's try again. Please say or enter your 6 digit PIN.",
+            resp.say("Let's try again. Please say or enter your 6 digit PIN.", 
                      voice="Polly.Joanna", language="en-US")
             gather = Gather(
                 action="/gather_pin",
@@ -86,17 +80,17 @@ def gather_pin():
                 speech_timeout="auto",
                 barge_in="true"
             )
-            gather.say("Please say or enter your 6 digit PIN.",
+            gather.say("Please say or enter your 6 digit PIN.", 
                        voice="Polly.Joanna", language="en-US")
             resp.append(gather)
             return twiml_response(resp)
 
         active_pins[call_sid] = {"pin": pin}
 
-        resp.pause(length=1)                        # fixed
+        resp.pause(length=1)              # changed from 0.3
         spoken_pin = speak_pin_digits(pin)
         resp.say(f"Am I right with {spoken_pin}?", voice="Polly.Joanna", language="en-US")
-        resp.pause(length=1)                        # fixed
+        resp.pause(length=1)              # changed from 0.3
 
         gather = Gather(
             action="/confirm_pin",
@@ -106,13 +100,12 @@ def gather_pin():
             speech_timeout="auto",
             barge_in="true"
         )
-        gather.say("Say yes or press 1 for yes. Say no or press 2 for no.",
+        gather.say("Say yes or press 1 for yes. Say no or press 2 for no.", 
                    voice="Polly.Joanna", language="en-US")
         resp.append(gather)
 
         return twiml_response(resp)
-    except Exception as e:
-        traceback.print_exc()
+    except:
         resp = VoiceResponse()
         resp.say("Sorry, something went wrong.", voice="Polly.Joanna", language="en-US")
         return twiml_response(resp)
@@ -131,13 +124,13 @@ def confirm_pin():
 
         if not is_yes:
             resp.say("Okay, let's try again.", voice="Polly.Joanna", language="en-US")
-            resp.redirect("/voice", method="POST")
+            resp.redirect("/voice")
             return twiml_response(resp)
 
         pin = active_pins.get(call_sid, {}).get("pin")
         if not pin:
             resp.say("Sorry, something went wrong. Please start over.", voice="Polly.Joanna", language="en-US")
-            resp.redirect("/voice", method="POST")
+            resp.redirect("/voice")
             return twiml_response(resp)
 
         resp.say("Finding your results.", voice="Polly.Joanna", language="en-US")
@@ -146,9 +139,9 @@ def confirm_pin():
 
         if results_df.empty:
             resp.say("Sorry, no results were found for that PIN.", voice="Polly.Joanna", language="en-US")
-            resp.pause(length=1)                    # fixed
+            resp.pause(length=1)          # changed from 0.3
             resp.say("Let's try again. Please say or enter your 6 digit PIN.", voice="Polly.Joanna", language="en-US")
-            resp.redirect("/voice", method="POST")
+            resp.redirect("/voice")
             return twiml_response(resp)
 
         # Read the results
@@ -162,26 +155,25 @@ def confirm_pin():
                 month_name = pd.to_datetime(f"{year}-{month_num:02d}-01").strftime('%B')
             except:
                 month_name = "the month"
-                day = int(row.get('day', 1))
+                day = int(row['day'])
                 year = 2023
 
-            resp.pause(length=1)                    # fixed
+            resp.pause(length=1)          # changed from 0.3
             if is_first:
                 resp.say(f"First sample dated {month_name} {day}, {year}.", voice="Polly.Joanna", language="en-US")
                 is_first = False
             else:
                 resp.say(f"The next sample dated {month_name} {day}.", voice="Polly.Joanna", language="en-US")
 
-            resp.say(f"Butterfat {row.get('fat', 0)} percent.", voice="Polly.Joanna", language="en-US")
-            resp.say(f"Protein {row.get('protein', 0)} percent.", voice="Polly.Joanna", language="en-US")
-            resp.say(f"Somatic cell count {int(row.get('scc', 0)):,}.", voice="Polly.Joanna", language="en-US")
+            resp.say(f"Butterfat {row['fat']} percent.", voice="Polly.Joanna", language="en-US")
+            resp.say(f"Protein {row['protein']} percent.", voice="Polly.Joanna", language="en-US")
+            resp.say(f"Somatic cell count {int(row['scc']):,}.", voice="Polly.Joanna", language="en-US")
             
             if int(row.get('mun', 0)) > 0:
-                resp.say(f"Munn {int(row.get('mun', 0))}.", voice="Polly.Joanna", language="en-US")
+                resp.say(f"Munn {int(row['mun'])}.", voice="Polly.Joanna", language="en-US")
 
-            resp.pause(length=1)                    # fixed
+            resp.pause(length=1)          # changed from 0.3
 
-        # Final options
         gather = Gather(
             action="/handle_action",
             num_digits=1,
@@ -190,14 +182,12 @@ def confirm_pin():
             speech_timeout="auto",
             barge_in="true"
         )
-        gather.say("To repeat these results, say repeat or press 1. To end the call, say goodbye or press 2.",
+        gather.say("To repeat these results, say repeat or press 1. To end the call, say goodbye or press 2.", 
                    voice="Polly.Joanna", language="en-US")
         resp.append(gather)
 
         return twiml_response(resp)
-
-    except Exception as e:
-        traceback.print_exc()
+    except:
         resp = VoiceResponse()
         resp.say("Sorry, a system error occurred. Goodbye.", voice="Polly.Joanna", language="en-US")
         return twiml_response(resp)
@@ -213,12 +203,11 @@ def handle_action():
 
         if digits == "1" or "repeat" in speech:
             resp.say("Repeating the results.", voice="Polly.Joanna", language="en-US")
-            resp.redirect("/voice", method="POST")
+            resp.redirect("/voice")
         else:
             resp.say("Thank you for calling. Goodbye.", voice="Polly.Joanna", language="en-US")
         return twiml_response(resp)
-    except Exception as e:
-        traceback.print_exc()
+    except:
         resp = VoiceResponse()
         resp.say("Goodbye.", voice="Polly.Joanna", language="en-US")
         return twiml_response(resp)
@@ -226,5 +215,4 @@ def handle_action():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"🚀 Starting app on port {port}")
     app.run(host="0.0.0.0", port=port)
