@@ -148,7 +148,7 @@ def voice():
     gather = Gather(
         action="/gather_pin",
         num_digits=6,                    # Auto-submit after 6 digits
-        timeout=8,
+        timeout=3,
         finish_on_key="#",
         input="dtmf speech",
         speech_timeout=3,
