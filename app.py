@@ -30,7 +30,6 @@ def voice():
         resp.pause(length=0.3)
         active_pins[call_sid] = {"pin": None}
 
-    # Only one place that says the prompt (inside Gather)
     gather = Gather(
         action="/gather_pin",
         num_digits=6,
@@ -61,8 +60,8 @@ def gather_pin():
     resp = VoiceResponse()
 
     if len(pin) != 6:
-        resp.say("Let's try again.", voice="Polly.Joanna", language="en-US")
-        # Directly ask again without repeating the full message
+        resp.say("Let's try again. Please say or enter your 6 digit PIN.", 
+                 voice="Polly.Joanna", language="en-US")
         gather = Gather(
             action="/gather_pin",
             num_digits=6,
@@ -121,14 +120,14 @@ def confirm_pin():
         return str(resp)
 
     # Read results
-    resp.say("Thank you. Here are your milk test results.", voice="Polly.Joanna", language="en-US")
+    resp.say("Finding your results.", voice="Polly.Joanna", language="en-US")
 
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
 
     if results_df.empty:
         resp.say("Sorry, no results were found for that PIN.", voice="Polly.Joanna", language="en-US")
         resp.pause(length=0.3)
-        resp.say("Let's try again.", voice="Polly.Joanna", language="en-US")
+        resp.say("Let's try again. Please say or enter your 6 digit PIN.", voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
         return str(resp)
 
@@ -157,14 +156,21 @@ def confirm_pin():
         resp.say(f"Protein {row['protein']} percent.", voice="Polly.Joanna", language="en-US")
         resp.say(f"Somatic cell count {int(row['scc']):,}.", voice="Polly.Joanna", language="en-US")
         
-        resp.pause(length=0.1)
         if int(row.get('mun', 0)) > 0:
             resp.say(f"Munn {int(row['mun'])}.", voice="Polly.Joanna", language="en-US")
 
         resp.pause(length=0.3)
 
-    gather = Gather(action="/handle_action", num_digits=1, timeout=10)
-    gather.say("To repeat these results, press 1. To end the call, press 2.", 
+    # Final options - support both voice and DTMF
+    gather = Gather(
+        action="/handle_action",
+        num_digits=1,
+        timeout=12,
+        input="dtmf speech",
+        speech_timeout="auto",
+        barge_in="true"
+    )
+    gather.say("To repeat these results, say repeat or press 1. To end the call, say goodbye or press 2.", 
                voice="Polly.Joanna", language="en-US")
     resp.append(gather)
 
@@ -174,9 +180,12 @@ def confirm_pin():
 @app.route("/handle_action", methods=['POST'])
 def handle_action():
     digits = request.values.get('Digits', '').strip()
+    speech = request.values.get('SpeechResult', '').strip().lower()
+
     resp = VoiceResponse()
 
-    if digits == "1":
+    # Support both voice and keypad
+    if digits == "1" or "repeat" in speech:
         resp.say("Repeating the results.", voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
     else:
