@@ -30,7 +30,6 @@ def voice():
     if call_sid not in active_pins:
         resp.say("Thank you for calling the Milk Market Administrator Test Results Center.", 
                  voice="Polly.Joanna", language="en-US")
-        # Initial pause removed as requested
         active_pins[call_sid] = {"pin": None}
 
     gather = Gather(
@@ -97,10 +96,11 @@ def gather_pin():
 
     active_pins[call_sid] = {"pin": pin}
 
+    # Faster flow: Say confirmation immediately with no extra delay
     spoken_pin = speak_pin_digits(pin)
     resp.say(f"Am I right with {spoken_pin}?", voice="Polly.Joanna", language="en-US")
-    # No pause here (as previously requested)
 
+    # Directly append the gather without any pause in between
     gather = Gather(
         action="/confirm_pin",
         num_digits=1,
@@ -163,7 +163,7 @@ def confirm_pin():
             day = int(row['day'])
             year = 2023
 
-        resp.pause(length=1)                    # Pause before each sample date
+        resp.pause(length=1)
         if is_first:
             resp.say(f"First sample dated {month_name} {day}, {year}.", voice="Polly.Joanna", language="en-US")
             is_first = False
@@ -177,9 +177,8 @@ def confirm_pin():
         if int(row.get('mun', 0)) > 0:
             resp.say(f"Munn {int(row['mun'])}.", voice="Polly.Joanna", language="en-US")
 
-        resp.pause(length=1)                    # Pause after each full result
+        resp.pause(length=1)
 
-    # Final gather - no pause before it (as requested)
     gather = Gather(action="/handle_action", num_digits=1, timeout=10)
     gather.say("To repeat these results, say repeat or press 1. To end the call, say goodbye or press 2.", 
                voice="Polly.Joanna", language="en-US")
