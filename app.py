@@ -30,7 +30,7 @@ def voice():
     if call_sid not in active_pins:
         resp.say("Thank you for calling the Milk Market Administrator Test Results Center.", 
                  voice="Polly.Joanna", language="en-US")
-        resp.pause(length=1)
+        # Initial pause removed as requested
         active_pins[call_sid] = {"pin": None}
 
     gather = Gather(
@@ -59,11 +59,8 @@ def gather_pin():
     call_sid = request.values.get('CallSid')
 
     raw = digits if digits else speech
-
-    # Improved PIN extraction
     pin = ''.join(filter(str.isdigit, raw))
 
-    # Stronger spoken word conversion
     if len(pin) < 6 and speech:
         word_to_digit = {
             "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3",
@@ -79,9 +76,7 @@ def gather_pin():
 
     resp = VoiceResponse()
 
-    # FIXED: More robust check
     if len(pin) != 6:
-        print(f"❌ PIN length invalid: {len(pin)} digits")
         resp.say("Let's try again. Please say or enter your 6 digit PIN.", 
                  voice="Polly.Joanna", language="en-US")
         gather = Gather(
@@ -100,14 +95,11 @@ def gather_pin():
         resp.append(gather)
         return twiml_response(resp)
 
-    # === If we reach here, we have exactly 6 digits ===
-    print(f"✅ PIN accepted: {pin}")
     active_pins[call_sid] = {"pin": pin}
 
-    resp.pause(length=1)
     spoken_pin = speak_pin_digits(pin)
     resp.say(f"Am I right with {spoken_pin}?", voice="Polly.Joanna", language="en-US")
-    resp.pause(length=1)
+    # No pause here (as previously requested)
 
     gather = Gather(
         action="/confirm_pin",
@@ -125,7 +117,6 @@ def gather_pin():
     return twiml_response(resp)
 
 
-# The rest of your routes remain unchanged
 @app.route("/confirm_pin", methods=['POST'])
 def confirm_pin():
     digits = request.values.get('Digits', '').strip()
@@ -172,7 +163,7 @@ def confirm_pin():
             day = int(row['day'])
             year = 2023
 
-        resp.pause(length=1)
+        resp.pause(length=1)                    # Pause before each sample date
         if is_first:
             resp.say(f"First sample dated {month_name} {day}, {year}.", voice="Polly.Joanna", language="en-US")
             is_first = False
@@ -186,8 +177,9 @@ def confirm_pin():
         if int(row.get('mun', 0)) > 0:
             resp.say(f"Munn {int(row['mun'])}.", voice="Polly.Joanna", language="en-US")
 
-        resp.pause(length=1)
+        resp.pause(length=1)                    # Pause after each full result
 
+    # Final gather - no pause before it (as requested)
     gather = Gather(action="/handle_action", num_digits=1, timeout=10)
     gather.say("To repeat these results, say repeat or press 1. To end the call, say goodbye or press 2.", 
                voice="Polly.Joanna", language="en-US")
