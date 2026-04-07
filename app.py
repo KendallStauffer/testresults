@@ -2,18 +2,29 @@ from flask import Flask, request, Response
 from twilio.twiml.voice_response import VoiceResponse, Gather
 import pandas as pd
 import os
+import logging
 
 app = Flask(__name__)
 
+# ====================== LOGGING SETUP ======================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
 active_pins = {}
+
+logger.info("🚀 Starting Milk Test Results Voice App...")
 
 print("Loading milk test results...")
 try:
     df = pd.read_csv("test_results_long.csv")
     df['Pin_Number'] = df['Pin_Number'].astype(str).str.strip().str.zfill(6)
-    print(f"✅ Loaded {len(df)} records.")
+    logger.info(f"✅ Successfully loaded {len(df)} records.")
 except Exception as e:
-    print(f"❌ Error loading CSV: {e}")
+    logger.error(f"❌ Failed to load CSV: {e}")
     df = pd.DataFrame()
 
 def speak_pin_digits(pin: str):
@@ -22,8 +33,20 @@ def speak_pin_digits(pin: str):
 def twiml_response(resp: VoiceResponse):
     return Response(str(resp), mimetype="text/xml")
 
+# Helper to log important events with call context
+def log_call(event: str, extra: dict = None):
+    if extra is None:
+        extra = {}
+    call_sid = request.values.get('CallSid', 'unknown')
+    from_number = request.values.get('From', 'unknown')
+    details = " | ".join(f"{k}={v}" for k, v in extra.items()) if extra else ""
+    logger.info(f"{event} | CallSid={call_sid} | From={from_number} {details}")
+
+# ====================== ROUTES ======================
+
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
+    log_call("INCOMING_CALL")
     call_sid = request.values.get('CallSid')
     resp = VoiceResponse()
 
@@ -71,11 +94,12 @@ def gather_pin():
         if extra:
             pin = (pin + extra)[:6]
 
-    print(f"Raw: '{raw}' → Cleaned PIN: '{pin}' (length: {len(pin)})")
+    log_call("PIN_ATTEMPT", {"raw": raw, "cleaned": pin, "length": len(pin)})
 
     resp = VoiceResponse()
 
     if len(pin) != 6:
+        log_call("PIN_INVALID")
         resp.say("Let's try again. Please say or enter your 6 digit PIN.", 
                  voice="Polly.Joanna", language="en-US")
         gather = Gather(
@@ -95,12 +119,11 @@ def gather_pin():
         return twiml_response(resp)
 
     active_pins[call_sid] = {"pin": pin}
+    log_call("PIN_ACCEPTED", {"pin": pin})
 
-    # Faster flow: Say confirmation immediately with no extra delay
     spoken_pin = speak_pin_digits(pin)
     resp.say(f"Am I right with {spoken_pin}?", voice="Polly.Joanna", language="en-US")
 
-    # Directly append the gather without any pause in between
     gather = Gather(
         action="/confirm_pin",
         num_digits=1,
@@ -123,9 +146,10 @@ def confirm_pin():
     speech = request.values.get('SpeechResult', '').strip().lower()
     call_sid = request.values.get('CallSid')
 
-    resp = VoiceResponse()
-
     is_yes = digits == "1" or any(word in speech for word in ["yes", "yeah", "correct", "right", "yep"])
+    log_call("CONFIRMATION", {"input": speech or digits, "is_yes": is_yes})
+
+    resp = VoiceResponse()
 
     if not is_yes:
         resp.say("Okay, let's try again.", voice="Polly.Joanna", language="en-US")
@@ -134,20 +158,22 @@ def confirm_pin():
 
     pin = active_pins.get(call_sid, {}).get("pin")
     if not pin:
+        log_call("ERROR_PIN_LOST")
         resp.say("Sorry, something went wrong. Please start over.", voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
         return twiml_response(resp)
 
-    resp.say("Finding your results.", voice="Polly.Joanna", language="en-US")
-
+    log_call("RESULTS_LOOKUP", {"pin": pin})
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
 
     if results_df.empty:
+        log_call("NO_RESULTS_FOUND", {"pin": pin})
         resp.say("Sorry, no results were found for that PIN. Let's try again.", 
                  voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
         return twiml_response(resp)
 
+    log_call("RESULTS_DELIVERED", {"count": len(results_df)})
     resp.say("Here are your milk test results.", voice="Polly.Joanna", language="en-US")
 
     is_first = True
@@ -191,6 +217,7 @@ def confirm_pin():
 def handle_action():
     digits = request.values.get('Digits', '').strip()
     speech = request.values.get('SpeechResult', '').strip().lower()
+    log_call("FINAL_ACTION", {"choice": speech or digits})
 
     resp = VoiceResponse()
 
@@ -204,4 +231,5 @@ def handle_action():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    logger.info(f"App running on port {port}")
     app.run(host="0.0.0.0", port=port)
