@@ -29,7 +29,7 @@ active_pins = {}
 df = pd.DataFrame()
 last_upload_time = "Never"
 
-# Load data function
+# Load data
 def load_data():
     global df, last_upload_time
     try:
@@ -64,19 +64,21 @@ def log_call(event: str, extra: dict = None):
 
 @app.route("/status")
 def status():
+    record_count = len(df) if not df.empty else 0
     return render_template_string('''
         <!DOCTYPE html>
         <html>
         <head><title>MMA System Status</title></head>
         <body style="font-family: Arial; margin: 40px;">
             <h2>Milk Market Administrator - System Status</h2>
-            <p><strong>Current Records:</strong> {{ len(df) if not df.empty else 0 }}</p>
+            <p><strong>Current Records:</strong> {{ record_count }}</p>
             <p><strong>Last Data Upload:</strong> {{ last_upload_time }}</p>
             <hr>
             <p><a href="/upload">Upload New Data File</a></p>
         </body>
         </html>
-    ''', df=df, last_upload_time=last_upload_time)
+    ''', record_count=record_count, last_upload_time=last_upload_time)
+
 
 @app.route("/upload", methods=['GET', 'POST'])
 def upload_csv():
@@ -105,9 +107,10 @@ def upload_csv():
 
         # Reload data
         if load_data():
+            record_count = len(df) if not df.empty else 0
             return f"""
             <h2>✅ Upload Successful!</h2>
-            <p>New data loaded with <strong>{len(df)}</strong> records.</p>
+            <p>New data loaded with <strong>{record_count}</strong> records.</p>
             <p>Last updated: {last_upload_time}</p>
             <p><a href="/upload">Upload another file</a> | <a href="/status">View Status</a></p>
             """
@@ -115,6 +118,7 @@ def upload_csv():
             return "<h2>⚠️ File uploaded but failed to load data.</h2>", 500
 
     # Show upload form
+    record_count = len(df) if not df.empty else 0
     return render_template_string('''
         <!DOCTYPE html>
         <html>
@@ -133,11 +137,11 @@ def upload_csv():
                 <p><button type="submit" style="padding:10px 20px; font-size:16px;">Upload CSV File</button></p>
             </form>
             
-            <p>Current records: <strong>{{ len(df) if not df.empty else 0 }}</strong></p>
+            <p>Current records: <strong>{{ record_count }}</strong></p>
             <p><a href="/status">View System Status</a></p>
         </body>
         </html>
-    ''', df=df)
+    ''', record_count=record_count)
 
 # ====================== VOICE ROUTES ======================
 
