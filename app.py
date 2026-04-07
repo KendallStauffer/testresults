@@ -29,7 +29,6 @@ active_pins = {}
 df = pd.DataFrame()
 last_upload_time = "Never"
 
-# Load data
 def load_data():
     global df, last_upload_time
     try:
@@ -39,7 +38,6 @@ def load_data():
             last_upload_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             logger.info(f"✅ Loaded {len(df)} records")
             return True
-        logger.warning("CSV file not found")
         return False
     except Exception as e:
         logger.error(f"Failed to load CSV: {e}")
@@ -83,11 +81,14 @@ def status():
 @app.route("/upload", methods=['GET', 'POST'])
 def upload_csv():
     if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
+        password = request.form.get('password', '').strip()
 
-        if username != UPLOAD_USERNAME or password != UPLOAD_PASSWORD:
-            return "<h2>❌ Incorrect username or password</h2><p><a href='/upload'>Try again</a></p>", 401
+        if password != UPLOAD_PASSWORD:
+            return """
+            <h2>❌ Incorrect Password</h2>
+            <p>Please try again.</p>
+            <p><a href="/upload">Back to Upload</a></p>
+            """, 401
 
         if 'file' not in request.files:
             return "<h2>❌ No file uploaded</h2>", 400
@@ -103,7 +104,7 @@ def upload_csv():
 
         # Save new file
         file.save(CSV_PATH)
-        logger.info(f"New CSV uploaded by {username}")
+        logger.info("New CSV uploaded successfully")
 
         # Reload data
         if load_data():
@@ -126,24 +127,27 @@ def upload_csv():
         <body style="font-family: Arial; max-width: 600px; margin: 40px auto;">
             <h2>Milk Market Administrator - Data Upload</h2>
             <p><strong>Username:</strong> MMAadmin</p>
+            <p><strong>Password:</strong> ForUSDA!2026</p>
             
             <form method="post" enctype="multipart/form-data">
-                <p><strong>Password:</strong><br>
-                <input type="password" name="password" required style="width:100%; padding:8px;"></p>
+                <p><strong>Enter Password:</strong><br>
+                <input type="password" name="password" required style="width:100%; padding:8px; margin-bottom:10px;"></p>
                 
-                <p><strong>Select New CSV File:</strong><br>
+                <p><strong>Select CSV File:</strong><br>
                 <input type="file" name="file" accept=".csv" required></p>
                 
-                <p><button type="submit" style="padding:10px 20px; font-size:16px;">Upload CSV File</button></p>
+                <p><button type="submit" style="padding:10px 20px; font-size:16px;">Upload New Data File</button></p>
             </form>
             
-            <p>Current records: <strong>{{ record_count }}</strong></p>
+            <p>Current records in system: <strong>{{ record_count }}</strong></p>
             <p><a href="/status">View System Status</a></p>
         </body>
         </html>
     ''', record_count=record_count)
 
+
 # ====================== VOICE ROUTES ======================
+# (Your voice code remains the same as the last working version)
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
