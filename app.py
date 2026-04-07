@@ -5,7 +5,7 @@ import os
 
 app = Flask(__name__)
 
-active_pins = {}
+active_pins = {}   # Store PIN per call
 
 print("Loading milk test results...")
 try:
@@ -19,24 +19,28 @@ except Exception as e:
 def speak_pin_digits(pin: str):
     return " ".join(pin)
 
+# ====================== MAIN ENTRY POINT ======================
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
     call_sid = request.values.get('CallSid')
     resp = VoiceResponse()
 
+    # Play greeting only the first time
     if call_sid not in active_pins:
         resp.say("Thank you for calling the Milk Market Administrator Test Results Center.", 
                  voice="Polly.Joanna", language="en-US")
         resp.pause(length=0.5)
         active_pins[call_sid] = {"pin": None}
 
+    # Single place to ask for PIN
     gather = Gather(
         action="/gather_pin",
         num_digits=6,
         timeout=15,
         finish_on_key="",
         input="dtmf speech",
-        speech_timeout="auto"
+        speech_timeout="auto",
+        barge_in="true"
     )
     gather.say("Please say or enter your 6 digit PIN.", 
                voice="Polly.Joanna", language="en-US")
@@ -59,11 +63,24 @@ def gather_pin():
     resp = VoiceResponse()
 
     if len(pin) != 6:
-        resp.say("Let's try again. Please enter your 6 digit PIN.", 
+        resp.say("Let's try again. Please say or enter your 6 digit PIN.", 
                  voice="Polly.Joanna", language="en-US")
-        resp.redirect("/voice")
+        # Stay in the same flow - ask again directly
+        gather = Gather(
+            action="/gather_pin",
+            num_digits=6,
+            timeout=15,
+            finish_on_key="",
+            input="dtmf speech",
+            speech_timeout="auto",
+            barge_in="true"
+        )
+        gather.say("Please say or enter your 6 digit PIN.", 
+                   voice="Polly.Joanna", language="en-US")
+        resp.append(gather)
         return str(resp)
 
+    # Store PIN
     active_pins[call_sid] = {"pin": pin}
 
     resp.pause(length=0.2)
@@ -77,7 +94,7 @@ def gather_pin():
         timeout=10,
         input="dtmf speech",
         speech_timeout="auto",
-        bargeIn=True
+        barge_in="true"
     )
     gather.say("Say yes or press 1 for yes. Say no or press 2 for no.", 
                voice="Polly.Joanna", language="en-US")
@@ -107,19 +124,19 @@ def confirm_pin():
         resp.redirect("/voice")
         return str(resp)
 
-    # Check if results exist
+    # Read results immediately
+    resp.say("Thank you. Here are your milk test results.", voice="Polly.Joanna", language="en-US")
+
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
 
     if results_df.empty:
         resp.say("Sorry, no results were found for that PIN.", voice="Polly.Joanna", language="en-US")
         resp.pause(length=0.6)
-        resp.say("Let's try again. ", voice="Polly.Joanna", language="en-US")
+        resp.say("Let's try again. Please say or enter your 6 digit PIN.", voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
         return str(resp)
 
-    # Results found - read them
-    resp.say("Thank you. Here are your milk test results.", voice="Polly.Joanna", language="en-US")
-
+    # Read the actual results
     is_first = True
     for _, row in results_df.iterrows():
         try:
