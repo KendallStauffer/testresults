@@ -174,29 +174,25 @@ def gather_pin():
     raw = digits if digits else speech
     print(f"Raw input received: '{raw}'")
 
-    # === IMPROVED CLEANING WITH LOWERCASE CONVERSION ===
-    if not raw:
-        pin = ""
-    else:
-        # Step 1: Try direct digits
-        pin = ''.join(filter(str.isdigit, raw))
+    # === STRONGEST CLEANING LOGIC ===
+    pin = ''.join(filter(str.isdigit, raw))
 
-        # Step 2: If not 6 digits, convert words (force lowercase)
-        if len(pin) != 6 and speech:
-            word_map = {
-                "zero": "0", "oh": "0", "o": "0",
-                "one": "1", "two": "2", "three": "3",
-                "four": "4", "five": "5", "six": "6",
-                "seven": "7", "eight": "8", "nine": "9"
-            }
-            # Convert entire speech to lowercase and split
-            words = speech.lower().split()
-            converted = [word_map.get(w, '') for w in words]
-            pin = ''.join(converted)
+    # If we don't have 6 digits, try full word conversion
+    if len(pin) != 6 and speech:
+        word_map = {
+            "zero": "0", "oh": "0", "o": "0",
+            "one": "1", "two": "2", "three": "3",
+            "four": "4", "five": "5", "six": "6",
+            "seven": "7", "eight": "8", "nine": "9"
+        }
+        # Convert to lowercase and split
+        words = speech.lower().split()
+        converted = [word_map.get(w, '') for w in words]
+        pin = ''.join(converted)
 
-        # Step 3: Final fallback - take last 6 digits if too many
-        if len(pin) > 6:
-            pin = pin[-6:]
+    # Final fallback: take the last 6 digits if we have more
+    if len(pin) > 6:
+        pin = pin[-6:]
 
     log_call("PIN_ATTEMPT", {"raw": raw, "cleaned": pin, "length": len(pin)})
 
@@ -246,7 +242,6 @@ def gather_pin():
     return twiml_response(resp)
 
 
-# ====================== CONFIRM & HANDLE ======================
 @app.route("/confirm_pin", methods=['POST'])
 def confirm_pin():
     digits = request.values.get('Digits', '').strip()
