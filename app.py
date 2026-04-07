@@ -132,7 +132,7 @@ def upload_csv():
         </html>
     ''', record_count=record_count)
 
-# ====================== VOICE ROUTES ======================
+# ====================== VOICE ROUTES (Faster) ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
@@ -147,13 +147,13 @@ def voice():
 
     gather = Gather(
         action="/gather_pin",
-        num_digits=6,                    # Auto-submit after 6 digits
-        timeout=3,
+        num_digits=6,                    # Auto submit after 6 digits - no # needed
+        timeout=6,                       # Very short
         finish_on_key="#",
         input="dtmf speech",
-        speech_timeout=3,
+        speech_timeout=2,                # Short speech timeout
         language="en-US",
-        speech_model="numbers",
+        speech_model="numbers_and_commands",
         enhanced="true",
         hints="0 1 2 3 4 5 6 7 8 9",
         barge_in="true"
@@ -203,10 +203,10 @@ def gather_pin():
         gather = Gather(
             action="/gather_pin",
             num_digits=6,
-            timeout=8,
+            timeout=6,
             finish_on_key="#",
             input="dtmf speech",
-            speech_timeout=3,
+            speech_timeout=2,
             language="en-US",
             speech_model="numbers_and_commands",
             enhanced="true",
