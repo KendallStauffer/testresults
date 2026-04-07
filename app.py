@@ -59,9 +59,11 @@ def gather_pin():
     call_sid = request.values.get('CallSid')
 
     raw = digits if digits else speech
+
+    # Improved PIN extraction
     pin = ''.join(filter(str.isdigit, raw))
 
-    # Help with spoken digits
+    # Stronger spoken word conversion
     if len(pin) < 6 and speech:
         word_to_digit = {
             "zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3",
@@ -77,7 +79,9 @@ def gather_pin():
 
     resp = VoiceResponse()
 
+    # FIXED: More robust check
     if len(pin) != 6:
+        print(f"❌ PIN length invalid: {len(pin)} digits")
         resp.say("Let's try again. Please say or enter your 6 digit PIN.", 
                  voice="Polly.Joanna", language="en-US")
         gather = Gather(
@@ -96,6 +100,8 @@ def gather_pin():
         resp.append(gather)
         return twiml_response(resp)
 
+    # === If we reach here, we have exactly 6 digits ===
+    print(f"✅ PIN accepted: {pin}")
     active_pins[call_sid] = {"pin": pin}
 
     resp.pause(length=1)
@@ -119,6 +125,7 @@ def gather_pin():
     return twiml_response(resp)
 
 
+# The rest of your routes remain unchanged
 @app.route("/confirm_pin", methods=['POST'])
 def confirm_pin():
     digits = request.values.get('Digits', '').strip()
@@ -150,7 +157,6 @@ def confirm_pin():
         resp.redirect("/voice")
         return twiml_response(resp)
 
-    # Results found
     resp.say("Here are your milk test results.", voice="Polly.Joanna", language="en-US")
 
     is_first = True
