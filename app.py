@@ -132,7 +132,7 @@ def confirm_pin():
     if results_df.empty:
         resp.say("Sorry, no results were found for that PIN.", voice="Polly.Joanna", language="en-US")
         resp.pause(length=0.6)
-        resp.say("Let's try again. ", voice="Polly.Joanna", language="en-US")
+        resp.say("Let's try again.", voice="Polly.Joanna", language="en-US")
         resp.redirect("/voice")
         return str(resp)
 
