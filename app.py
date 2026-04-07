@@ -147,11 +147,11 @@ def voice():
 
     gather = Gather(
         action="/gather_pin",
-        num_digits=6,                    # Auto-submit after exactly 6 digits
-        # timeout removed - Twilio will submit immediately after 6 digits
+        num_digits=6,
+        timeout=6,                       # Short but safe timeout (you said it worked better with timeout)
         finish_on_key="#",
         input="dtmf speech",
-        speech_timeout=2,                # Shorter for faster speech cutoff
+        speech_timeout=2,                # Fast speech cutoff
         language="en-US",
         speech_model="numbers_and_commands",
         enhanced="true",
@@ -187,7 +187,7 @@ def gather_pin():
             "four": "4", "five": "5", "six": "6",
             "seven": "7", "eight": "8", "nine": "9"
         }
-        words = speech.lower().replace(",", " ").split()
+        words = speech.lower().replace(",", " ").replace(".", " ").split()
         converted = [word_map.get(w, '') for w in words]
         pin = ''.join(converted)
 
@@ -207,6 +207,7 @@ def gather_pin():
         gather = Gather(
             action="/gather_pin",
             num_digits=6,
+            timeout=6,
             finish_on_key="#",
             input="dtmf speech",
             speech_timeout=2,
