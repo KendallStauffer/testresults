@@ -59,19 +59,15 @@ def log_call(event: str, extra: dict = None):
     details = " | ".join(f"{k}={v}" for k, v in extra.items()) if extra else ""
     logger.info(f"{event} | CallUUID={call_uuid} | From={from_number} {details}")
 
-# ====================== ADMIN PAGES ======================
+# ====================== ADMIN (kept simple) ======================
 @app.route("/status")
 def status():
     record_count = len(df) if not df.empty else 0
     return render_template_string('''
-        <!DOCTYPE html>
-        <html><head><title>MMA Status</title></head>
-        <body style="font-family: Arial; margin: 40px;">
-            <h2>Milk Market Administrator - Status</h2>
-            <p><strong>Records:</strong> {{ record_count }}</p>
-            <p><strong>Last Upload:</strong> {{ last_upload_time }}</p>
-            <p><a href="/upload">Upload New Data File</a></p>
-        </body></html>
+        <h2>MMA Status</h2>
+        <p>Records: {{ record_count }}</p>
+        <p>Last Upload: {{ last_upload_time }}</p>
+        <p><a href="/upload">Upload CSV</a></p>
     ''', record_count=record_count, last_upload_time=last_upload_time)
 
 @app.route("/upload", methods=['GET', 'POST'])
@@ -79,37 +75,25 @@ def upload_csv():
     if request.method == 'POST':
         if request.form.get('password', '').strip() != UPLOAD_PASSWORD:
             return "<h2>❌ Incorrect Password</h2><p><a href='/upload'>Try again</a></p>", 401
-
         file = request.files.get('file')
-        if not file or file.filename == '' or not file.filename.lower().endswith('.csv'):
-            return "<h2>❌ Please upload a valid .csv file</h2>", 400
-
+        if not file or not file.filename.lower().endswith('.csv'):
+            return "<h2>❌ Upload valid CSV</h2>", 400
         if os.path.exists(CSV_PATH):
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            shutil.copy(CSV_PATH, f"{BACKUP_DIR}/test_results_long_{timestamp}.csv")
-
+            shutil.copy(CSV_PATH, f"{BACKUP_DIR}/backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
         file.save(CSV_PATH)
         load_data()
-        return f"<h2>✅ Upload Successful! Loaded {len(df)} records.</h2><p><a href='/upload'>Upload again</a> | <a href='/status'>Status</a></p>"
+        return f"<h2>✅ Success! Loaded {len(df)} records.</h2><p><a href='/upload'>Upload again</a> | <a href='/status'>Status</a></p>"
+    return '''
+        <h2>MMA Upload</h2>
+        <form method="post" enctype="multipart/form-data">
+            Password: <input type="password" name="password" required><br><br>
+            CSV: <input type="file" name="file" accept=".csv" required><br><br>
+            <button type="submit">Upload</button>
+        </form>
+        <p><a href="/status">Status</a></p>
+    '''
 
-    record_count = len(df) if not df.empty else 0
-    return render_template_string('''
-        <!DOCTYPE html>
-        <html><head><title>MMA Upload</title></head>
-        <body style="font-family: Arial; max-width: 600px; margin: 40px auto;">
-            <h2>Milk Market Administrator - Data Upload</h2>
-            <p><strong>Password:</strong> ForUSDA!2026</p>
-            <form method="post" enctype="multipart/form-data">
-                <p>Password: <input type="password" name="password" required style="width:100%; padding:8px;"></p>
-                <p>File: <input type="file" name="file" accept=".csv" required></p>
-                <button type="submit" style="padding:10px 20px;">Upload CSV File</button>
-            </form>
-            <p>Current records: <strong>{{ record_count }}</strong></p>
-            <p><a href="/status">View Status</a></p>
-        </body></html>
-    ''', record_count=record_count)
-
-# ====================== VOICE ROUTES - IMPROVED ======================
+# ====================== VOICE - IMPROVED ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
@@ -119,23 +103,21 @@ def voice():
     get_input = plivoxml.GetInputElement(
         action=f"{BASE_URL}/gather_pin",
         method="GET",
-        input_type="dtmf speech",   # Enable speech + keypad
+        input_type="dtmf speech",
         num_digits=6,
         digit_end_timeout=8,
-        finish_on_key="#"
+        speech_end_timeout="auto",
+        language="en-US"
     )
 
     get_input.add(plivoxml.SpeakElement(
-        "Thank you for calling the Milk Market Administrator Test Results Center. Please say or enter your 6 digit PIN.",
+        "Thank you for calling. Please say or enter your 6 digit PIN.",
         voice="Polly.Joanna", language="en-US"
     ))
 
     response.add(get_input)
 
-    response.add(plivoxml.SpeakElement(
-        "We didn't receive any input. Goodbye.",
-        voice="Polly.Joanna", language="en-US"
-    ))
+    response.add(plivoxml.SpeakElement("We didn't receive any input. Goodbye.", voice="Polly.Joanna", language="en-US"))
 
     return plivo_response(response)
 
@@ -147,23 +129,17 @@ def gather_pin():
     call_uuid = request.values.get('CallUUID', 'unknown')
 
     raw = digits if digits else speech
-    logger.info(f"GATHER_PIN | Digits: '{digits}' | Speech: '{speech}'")
+    logger.info(f"GATHER_PIN | Digits='{digits}' Speech='{speech}'")
 
-    # Clean input
-    cleaned = raw.replace("O", "0").replace("o", "0").replace("point", "").replace(".", "").replace(",", "").replace(" ", "")
-    pin = ''.join(filter(str.isdigit, cleaned))
+    # Clean and convert speech
+    pin = ''.join(filter(str.isdigit, raw.replace("O", "0").replace("o", "0").replace(" ", "")))
 
     if len(pin) != 6 and speech:
         word_map = {"zero":"0","oh":"0","o":"0","one":"1","two":"2","three":"3","four":"4","five":"5","six":"6","seven":"7","eight":"8","nine":"9"}
-        words = speech.lower().replace(",", " ").replace(".", " ").split()
+        words = speech.lower().split()
         pin = ''.join(word_map.get(w, '') for w in words)
 
-    if len(pin) != 6:
-        all_digits = ''.join(filter(str.isdigit, raw.replace("O", "0").replace("o", "0")))
-        if len(all_digits) >= 6:
-            pin = all_digits[-6:]
-
-    log_call("PIN_ATTEMPT", {"raw": raw, "cleaned": pin, "length": len(pin)})
+    log_call("PIN_ATTEMPT", {"raw": raw, "pin": pin, "length": len(pin)})
 
     response = plivoxml.ResponseElement()
 
@@ -174,12 +150,10 @@ def gather_pin():
             input_type="dtmf speech",
             num_digits=6,
             digit_end_timeout=8,
-            finish_on_key="#"
+            speech_end_timeout="auto",
+            language="en-US"
         )
-        get_input.add(plivoxml.SpeakElement(
-            "Sorry, please say or enter your 6 digit PIN again.",
-            voice="Polly.Joanna", language="en-US"
-        ))
+        get_input.add(plivoxml.SpeakElement("Sorry, please say or enter your 6 digit PIN again.", voice="Polly.Joanna", language="en-US"))
         response.add(get_input)
         return plivo_response(response)
 
@@ -195,12 +169,10 @@ def gather_pin():
         input_type="dtmf speech",
         num_digits=1,
         digit_end_timeout=10,
-        finish_on_key="#"
+        speech_end_timeout="auto",
+        language="en-US"
     )
-    get_input.add(plivoxml.SpeakElement(
-        "Say yes or press 1 for yes. Say no or press 2 for no.",
-        voice="Polly.Joanna", language="en-US"
-    ))
+    get_input.add(plivoxml.SpeakElement("Say yes or press 1 for yes. Say no or press 2 for no.", voice="Polly.Joanna", language="en-US"))
     response.add(get_input)
 
     return plivo_response(response)
@@ -212,9 +184,9 @@ def confirm_pin():
     speech = request.values.get('SpeechResult', '').strip().lower()
     call_uuid = request.values.get('CallUUID')
 
-    response = plivoxml.ResponseElement()
-
     is_yes = digits == "1" or any(word in speech for word in ["yes", "yeah", "correct", "right", "yep"])
+
+    response = plivoxml.ResponseElement()
 
     if not is_yes:
         response.add(plivoxml.SpeakElement("Okay, let's try again.", voice="Polly.Joanna", language="en-US"))
@@ -223,7 +195,7 @@ def confirm_pin():
 
     pin = active_pins.get(call_uuid, {}).get("pin")
     if not pin:
-        response.add(plivoxml.SpeakElement("Sorry, something went wrong. Please start over.", voice="Polly.Joanna", language="en-US"))
+        response.add(plivoxml.SpeakElement("Sorry, something went wrong.", voice="Polly.Joanna", language="en-US"))
         response.add(plivoxml.RedirectElement(f"{BASE_URL}/voice"))
         return plivo_response(response)
 
@@ -231,7 +203,7 @@ def confirm_pin():
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
 
     if results_df.empty:
-        response.add(plivoxml.SpeakElement("Sorry, no results were found for that PIN. Let's try again.", voice="Polly.Joanna", language="en-US"))
+        response.add(plivoxml.SpeakElement("Sorry, no results found for that PIN.", voice="Polly.Joanna", language="en-US"))
         response.add(plivoxml.RedirectElement(f"{BASE_URL}/voice"))
         return plivo_response(response)
 
@@ -248,17 +220,18 @@ def confirm_pin():
             response.add(plivoxml.SpeakElement(f"Munn {int(row.get('mun', 0))}.", voice="Polly.Joanna", language="en-US"))
         response.add(plivoxml.WaitElement(length=1))
 
-    # Final menu - improved repeat
+    # Final action - better repeat
     get_input = plivoxml.GetInputElement(
         action=f"{BASE_URL}/handle_action",
         method="GET",
         input_type="dtmf speech",
         num_digits=1,
         digit_end_timeout=10,
-        finish_on_key="#"
+        speech_end_timeout="auto",
+        language="en-US"
     )
     get_input.add(plivoxml.SpeakElement(
-        "To hear these results again, say repeat or press 1. To end the call, say goodbye or press 2.",
+        "To hear the results again, say repeat or press 1. To end the call, say goodbye or press 2.",
         voice="Polly.Joanna", language="en-US"
     ))
     response.add(get_input)
@@ -270,13 +243,14 @@ def confirm_pin():
 def handle_action():
     digits = request.values.get('Digits', '').strip()
     speech = request.values.get('SpeechResult', '').strip().lower()
+
     log_call("FINAL_ACTION", {"choice": speech or digits})
 
     response = plivoxml.ResponseElement()
 
     if digits == "1" or "repeat" in speech:
         response.add(plivoxml.SpeakElement("Repeating the results.", voice="Polly.Joanna", language="en-US"))
-        response.add(plivoxml.RedirectElement(f"{BASE_URL}/confirm_pin"))   # Go back to results, not beginning
+        response.add(plivoxml.RedirectElement(f"{BASE_URL}/confirm_pin"))  # Go back to results, not start
     else:
         response.add(plivoxml.SpeakElement("Thank you for calling. Goodbye.", voice="Polly.Joanna", language="en-US"))
 
