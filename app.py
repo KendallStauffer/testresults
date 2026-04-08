@@ -93,7 +93,7 @@ def upload_csv():
         <p><a href="/status">Status</a></p>
     '''
 
-# ====================== VOICE ROUTES ======================
+# ====================== VOICE ROUTES - OPTIMIZED FOR SPEECH ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
@@ -107,11 +107,13 @@ def voice():
         num_digits=6,
         digit_end_timeout=8,
         speech_end_timeout=3,
+        speech_model="command_and_search",   # Better for numbers
+        hints="0 1 2 3 4 5 6 7 8 9",         # Help Plivo recognize digits
         language="en-US"
     )
 
     get_input.add(plivoxml.SpeakElement(
-        "Thank you for calling. Please say or enter your 6 digit PIN.",
+        "Thank you for calling the Milk Market Administrator Test Results Center. Please say or enter your 6 digit PIN.",
         voice="Polly.Joanna", language="en-US"
     ))
 
@@ -131,10 +133,10 @@ def gather_pin():
     raw = digits if digits else speech
     logger.info(f"GATHER_PIN | Digits='{digits}' | Speech='{speech}'")
 
-    # === VERY STRONG CLEANING ===
+    # Strong cleaning
     text = raw.lower()
 
-    # Replace spoken words
+    # Replace spoken numbers
     word_map = {
         "zero": "0", "oh": "0", "o": "0",
         "one": "1", "two": "2", "three": "3",
@@ -144,10 +146,10 @@ def gather_pin():
     for word, num in word_map.items():
         text = text.replace(word, num)
 
-    # Remove everything except digits
+    # Extract all digits
     pin = ''.join(filter(str.isdigit, text))
 
-    # Aggressive fallback: take any 6 digits from the entire raw string
+    # Aggressive fallback
     if len(pin) != 6:
         all_digits = ''.join(filter(str.isdigit, raw))
         if len(all_digits) >= 6:
@@ -165,6 +167,8 @@ def gather_pin():
             num_digits=6,
             digit_end_timeout=8,
             speech_end_timeout=3,
+            speech_model="command_and_search",
+            hints="0 1 2 3 4 5 6 7 8 9",
             language="en-US"
         )
         get_input.add(plivoxml.SpeakElement(
@@ -174,7 +178,7 @@ def gather_pin():
         response.add(get_input)
         return plivo_response(response)
 
-    # PIN accepted
+    # Success
     active_pins[call_uuid] = {"pin": pin}
     log_call("PIN_ACCEPTED", {"pin": pin})
 
