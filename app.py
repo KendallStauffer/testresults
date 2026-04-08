@@ -225,7 +225,7 @@ def confirm_pin():
         response.add(get_input)
         return plivo_response(response)
 
-    # Read results
+    # Read the results
     log_call("RESULTS_LOOKUP", {"pin": pin})
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
 
@@ -260,7 +260,7 @@ def confirm_pin():
             response.add(plivoxml.SpeakElement(f"Munn {int(row.get('mun', 0))}.", voice="Polly.Joanna", language="en-US"))
         response.add(plivoxml.WaitElement(length=1))
 
-    # Final menu after results
+    # Final menu
     get_input = plivoxml.GetInputElement(
         action=f"{BASE_URL}/handle_action",
         method="GET",
@@ -288,11 +288,9 @@ def handle_action():
     response = plivoxml.ResponseElement()
 
     if digits == "1" or "repeat" in speech:
-        # Direct repeat - replay results without asking yes/no again
-        log_call("REPEAT_RESULTS")
+        # REPEAT: replay results directly
         response.add(plivoxml.SpeakElement("Repeating the results.", voice="Polly.Joanna", language="en-US"))
         
-        # Get the current pin and replay results directly
         call_uuid = request.values.get('CallUUID')
         pin = active_pins.get(call_uuid, {}).get("pin")
         if pin:
@@ -309,24 +307,26 @@ def handle_action():
                         response.add(plivoxml.SpeakElement(f"Munn {int(row.get('mun', 0))}.", voice="Polly.Joanna", language="en-US"))
                     response.add(plivoxml.WaitElement(length=1))
 
-    else:
-        response.add(plivoxml.SpeakElement("Thank you for calling. Goodbye.", voice="Polly.Joanna", language="en-US"))
+        # Show menu again after repeat
+        get_input = plivoxml.GetInputElement(
+            action=f"{BASE_URL}/handle_action",
+            method="GET",
+            input_type="dtmf speech",
+            num_digits=1,
+            digit_end_timeout=10,
+            speech_end_timeout=2,
+            language="en-US"
+        )
+        get_input.add(plivoxml.SpeakElement(
+            "To hear these results again, say repeat or press 1. To end the call, say goodbye or press 2.",
+            voice="Polly.Joanna", language="en-US"
+        ))
+        response.add(get_input)
 
-    # Final menu after repeat or end
-    get_input = plivoxml.GetInputElement(
-        action=f"{BASE_URL}/handle_action",
-        method="GET",
-        input_type="dtmf speech",
-        num_digits=1,
-        digit_end_timeout=10,
-        speech_end_timeout=2,
-        language="en-US"
-    )
-    get_input.add(plivoxml.SpeakElement(
-        "To hear these results again, say repeat or press 1. To end the call, say goodbye or press 2.",
-        voice="Polly.Joanna", language="en-US"
-    ))
-    response.add(get_input)
+    else:
+        # GOODBYE - properly end the call
+        response.add(plivoxml.SpeakElement("Thank you for calling. Goodbye.", voice="Polly.Joanna", language="en-US"))
+        response.add(plivoxml.HangupElement())   # This actually ends the call
 
     return plivo_response(response)
 
