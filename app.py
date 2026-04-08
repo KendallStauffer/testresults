@@ -225,7 +225,7 @@ def confirm_pin():
         response.add(get_input)
         return plivo_response(response)
 
-    # === RESULTS READING with prosody + break ===
+    # === RESULTS READING with proper SSML + prosody ===
     log_call("RESULTS_LOOKUP", {"pin": pin})
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
 
@@ -264,9 +264,13 @@ def confirm_pin():
         if int(row.get('mun', 0)) > 0:
             text += f" Munn {int(row.get('mun', 0))}."
 
-        # Proper SSML with prosody + break
-        speak = plivoxml.SpeakElement(f'<prosody rate="medium">{text.strip()}</prosody>', 
-                                      voice="Polly.Joanna", language="en-US")
+        # Correct SSML usage with text_type
+        speak = plivoxml.SpeakElement(
+            text.strip(),
+            voice="Polly.Joanna",
+            language="en-US",
+            text_type="ssml"   # This is the key parameter
+        )
         response.add(speak)
 
     # Final menu
@@ -319,8 +323,12 @@ def handle_action():
                     if int(row.get('mun', 0)) > 0:
                         text += f" Munn {int(row.get('mun', 0))}."
 
-                    speak = plivoxml.SpeakElement(f'<prosody rate="medium">{text.strip()}</prosody>', 
-                                                  voice="Polly.Joanna", language="en-US")
+                    speak = plivoxml.SpeakElement(
+                        text.strip(),
+                        voice="Polly.Joanna",
+                        language="en-US",
+                        text_type="ssml"
+                    )
                     response.add(speak)
 
         # Menu after repeat
