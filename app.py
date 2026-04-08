@@ -225,7 +225,7 @@ def confirm_pin():
         response.add(get_input)
         return plivo_response(response)
 
-    # === RESULTS READING with short SSML pause ===
+    # === RESULTS READING with SSML short pauses ===
     log_call("RESULTS_LOOKUP", {"pin": pin})
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
 
@@ -251,7 +251,8 @@ def confirm_pin():
 
     for _, row in results_df.iterrows():
         day = int(row.get('day', 1))
-        speak_text = f'''
+        
+        speak_text = f"""
             Sample from the {day}th. 
             <break time="500ms"/>
             Butterfat {row.get('fat', 0)} percent. 
@@ -260,9 +261,9 @@ def confirm_pin():
             <break time="500ms"/>
             Somatic cell count {int(row.get('scc', 0)):,}. 
             <break time="500ms"/>
-        '''
+        """
         if int(row.get('mun', 0)) > 0:
-            speak_text += f'''Munn {int(row.get('mun', 0))}.'''
+            speak_text += f"Munn {int(row.get('mun', 0))}."
 
         response.add(plivoxml.SpeakElement(speak_text.strip(), voice="Polly.Joanna", language="en-US"))
 
@@ -303,7 +304,7 @@ def handle_action():
             if not results_df.empty:
                 for _, row in results_df.iterrows():
                     day = int(row.get('day', 1))
-                    speak_text = f'''
+                    speak_text = f"""
                         Sample from the {day}th. 
                         <break time="500ms"/>
                         Butterfat {row.get('fat', 0)} percent. 
@@ -312,9 +313,9 @@ def handle_action():
                         <break time="500ms"/>
                         Somatic cell count {int(row.get('scc', 0)):,}. 
                         <break time="500ms"/>
-                    '''
+                    """
                     if int(row.get('mun', 0)) > 0:
-                        speak_text += f'''Munn {int(row.get('mun', 0))}.'''
+                        speak_text += f"Munn {int(row.get('mun', 0))}."
 
                     response.add(plivoxml.SpeakElement(speak_text.strip(), voice="Polly.Joanna", language="en-US"))
 
