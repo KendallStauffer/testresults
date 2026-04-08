@@ -126,16 +126,11 @@ def voice():
 @app.route("/gather_pin", methods=['GET'])
 def gather_pin():
     digits = request.values.get('Digits', '').strip()
-    speech = request.values.get('SpeechResult', '').strip()
-    speech_alt = request.values.get('Speech', '').strip()   # Plivo sometimes sends this instead
-
-    # Use whichever one Plivo actually sent
-    speech = speech if speech else speech_alt
+    speech = request.values.get('SpeechResult', '').strip() or request.values.get('Speech', '').strip()
 
     raw = digits if digits else speech
-    logger.info(f"GATHER_PIN | Digits='{digits}' | SpeechResult='{speech}' | Speech='{speech_alt}' | raw='{raw}'")
+    logger.info(f"GATHER_PIN | raw = '{raw}'")
 
-    # Strong cleaning
     pin = re.sub(r'\D', '', raw)
 
     log_call("PIN_ATTEMPT", {"raw": raw, "cleaned_pin": pin, "length": len(pin)})
@@ -159,7 +154,6 @@ def gather_pin():
         response.add(get_input)
         return plivo_response(response)
 
-    # PIN accepted
     active_pins[request.values.get('CallUUID', 'unknown')] = {"pin": pin}
     log_call("PIN_ACCEPTED", {"pin": pin})
 
@@ -229,3 +223,39 @@ def confirm_pin():
     get_input = plivoxml.GetInputElement(
         action=f"{BASE_URL}/handle_action",
         method="GET",
+        input_type="dtmf speech",
+        num_digits=1,
+        digit_end_timeout=10,
+        speech_end_timeout=3,
+        language="en-US"
+    )
+    get_input.add(plivoxml.SpeakElement(
+        "To hear these results again, say repeat or press 1. To end the call, say goodbye or press 2.",
+        voice="Polly.Joanna", language="en-US"
+    ))
+    response.add(get_input)
+
+    return plivo_response(response)
+
+
+@app.route("/handle_action", methods=['GET'])
+def handle_action():
+    digits = request.values.get('Digits', '').strip()
+    speech = request.values.get('SpeechResult', '').strip().lower() or request.values.get('Speech', '').strip().lower()
+    log_call("FINAL_ACTION", {"choice": speech or digits})
+
+    response = plivoxml.ResponseElement()
+
+    if digits == "1" or "repeat" in speech:
+        response.add(plivoxml.SpeakElement("Repeating the results.", voice="Polly.Joanna", language="en-US"))
+        response.add(plivoxml.RedirectElement(f"{BASE_URL}/confirm_pin"))
+    else:
+        response.add(plivoxml.SpeakElement("Thank you for calling. Goodbye.", voice="Polly.Joanna", language="en-US"))
+
+    return plivo_response(response)
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    logger.info(f"App running on port {port}")
+    app.run(host="0.0.0.0", port=port)
