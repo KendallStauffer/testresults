@@ -111,7 +111,7 @@ def voice():
     )
 
     get_input.add(plivoxml.SpeakElement(
-        "Thank you for calling the Milk Market Administrator Test Results Center. Please say or enter your 6 digit PIN.",
+        "Thank you for calling. Please say or enter your 6 digit PIN.",
         voice="Polly.Joanna", language="en-US"
     ))
 
@@ -131,10 +131,10 @@ def gather_pin():
     raw = digits if digits else speech
     logger.info(f"GATHER_PIN | Digits='{digits}' | Speech='{speech}'")
 
-    # === STRONG SPEECH CLEANING ===
-    text = speech.lower() if speech else ""
+    # === VERY STRONG CLEANING ===
+    text = raw.lower()
 
-    # Replace spoken numbers
+    # Replace spoken words
     word_map = {
         "zero": "0", "oh": "0", "o": "0",
         "one": "1", "two": "2", "three": "3",
@@ -144,10 +144,10 @@ def gather_pin():
     for word, num in word_map.items():
         text = text.replace(word, num)
 
-    # Extract digits
+    # Remove everything except digits
     pin = ''.join(filter(str.isdigit, text))
 
-    # Final fallback - take any 6 digits from raw input
+    # Aggressive fallback: take any 6 digits from the entire raw string
     if len(pin) != 6:
         all_digits = ''.join(filter(str.isdigit, raw))
         if len(all_digits) >= 6:
