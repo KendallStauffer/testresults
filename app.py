@@ -1,4 +1,4 @@
-from flask import Flask, request, Response, render_template_string, make_response
+from flask import Flask, request, Response, render_template_string
 import plivo
 from plivo import plivoxml
 import pandas as pd
@@ -53,13 +53,14 @@ def plivo_response(resp: plivoxml.ResponseElement):
     return Response(resp.to_string(), mimetype="application/xml")
 
 def log_call(event: str, extra: dict = None):
-    if extra is None: extra = {}
-    call_uuid = request.values.get('CallUUID', 'unknown')   # Plivo uses CallUUID
+    if extra is None:
+        extra = {}
+    call_uuid = request.values.get('CallUUID', 'unknown')
     from_number = request.values.get('From', 'unknown')
     details = " | ".join(f"{k}={v}" for k, v in extra.items()) if extra else ""
     logger.info(f"{event} | CallUUID={call_uuid} | From={from_number} {details}")
 
-# ====================== ADMIN PAGES (unchanged) ======================
+# ====================== ADMIN PAGES ======================
 @app.route("/status")
 def status():
     record_count = len(df) if not df.empty else 0
@@ -79,7 +80,6 @@ def status():
 
 @app.route("/upload", methods=['GET', 'POST'])
 def upload_csv():
-    # ... (your existing upload logic remains 100% the same)
     if request.method == 'POST':
         password = request.form.get('password', '').strip()
         if password != UPLOAD_PASSWORD:
@@ -134,7 +134,7 @@ def upload_csv():
         </html>
     ''', record_count=record_count)
 
-# ====================== VOICE ROUTES - CONVERTED TO PLIVO ======================
+# ====================== VOICE ROUTES - FIXED WITH GetInputElement ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
@@ -149,25 +149,27 @@ def voice():
         ))
         active_pins[call_uuid] = {"pin": None}
 
-    # Plivo GetDigits (replaces Gather)
-    get_digits = plivoxml.GetDigitsElement(
-        action="/gather_pin",
-        method="POST",
-        num_digits=6,
-        timeout=8,                    # Plivo timeout in seconds
-        finish_on_key="#",
-        input_type="dtmf speech",     # Supports both
-        speech_timeout=2,
-        language="en-US",
-        # Plivo has limited speech options compared to Twilio
-        # No direct equivalent for enhanced/hints/speech_model
+    # Modern Plivo: Use GetInputElement
+    get_input = (plivoxml.GetInputElement()
+        .set_action("/gather_pin")
+        .set_method("POST")
+        .set_input_type("dtmf speech")
+        .set_num_digits(6)
+        .set_digit_end_timeout(5)
+        .set_speech_end_timeout(2)
+        .set_timeout(10)
+        .set_language("en-US")
+        .set_redirect(True)
     )
-    get_digits.add(plivoxml.SpeakElement(
+
+    get_input.add(plivoxml.SpeakElement(
         "Please enter your 6 digit PIN.",
         voice="Polly.Joanna", language="en-US"
     ))
-    response.add(get_digits)
 
+    response.add(get_input)
+
+    # Fallback if no input
     response.add(plivoxml.SpeakElement(
         "We didn't receive any input. Goodbye.",
         voice="Polly.Joanna", language="en-US"
@@ -181,12 +183,12 @@ def gather_pin():
     call_uuid = request.values.get('CallUUID')
 
     digits = request.values.get('Digits', '').strip()
-    speech = request.values.get('SpeechResult', '').strip()   # Plivo returns SpeechResult when speech is used
+    speech = request.values.get('SpeechResult', '').strip()
 
     raw = digits if digits else speech
     print(f"Raw input received - Digits='{digits}', Speech='{speech}', Using='{raw}'")
 
-    # Your strong cleaning logic (unchanged)
+    # Strong cleaning logic
     cleaned = raw.replace("O", "0").replace("o", "0").replace("point", "").replace(".", "").replace(",", "").replace(" ", "")
     pin = ''.join(filter(str.isdigit, cleaned))
 
@@ -216,21 +218,23 @@ def gather_pin():
             "Let's try again. Please enter your 6 digit PIN.",
             voice="Polly.Joanna", language="en-US"
         ))
-        get_digits = plivoxml.GetDigitsElement(
-            action="/gather_pin",
-            method="POST",
-            num_digits=6,
-            timeout=8,
-            finish_on_key="#",
-            input_type="dtmf speech",
-            speech_timeout=2,
-            language="en-US"
+
+        get_input = (plivoxml.GetInputElement()
+            .set_action("/gather_pin")
+            .set_method("POST")
+            .set_input_type("dtmf speech")
+            .set_num_digits(6)
+            .set_digit_end_timeout(5)
+            .set_speech_end_timeout(2)
+            .set_timeout(10)
+            .set_language("en-US")
+            .set_redirect(True)
         )
-        get_digits.add(plivoxml.SpeakElement(
+        get_input.add(plivoxml.SpeakElement(
             "Please enter your 6 digit PIN.",
             voice="Polly.Joanna", language="en-US"
         ))
-        response.add(get_digits)
+        response.add(get_input)
         return plivo_response(response)
 
     active_pins[call_uuid] = {"pin": pin}
@@ -242,21 +246,23 @@ def gather_pin():
         voice="Polly.Joanna", language="en-US"
     ))
 
-    # Confirmation step
-    get_digits = plivoxml.GetDigitsElement(
-        action="/confirm_pin",
-        method="POST",
-        num_digits=1,
-        timeout=10,
-        input_type="dtmf speech",
-        speech_timeout="auto",
-        language="en-US"
+    # Confirmation
+    get_input = (plivoxml.GetInputElement()
+        .set_action("/confirm_pin")
+        .set_method("POST")
+        .set_input_type("dtmf speech")
+        .set_num_digits(1)
+        .set_digit_end_timeout(5)
+        .set_speech_end_timeout("auto")
+        .set_timeout(12)
+        .set_language("en-US")
+        .set_redirect(True)
     )
-    get_digits.add(plivoxml.SpeakElement(
+    get_input.add(plivoxml.SpeakElement(
         "Say yes or press 1 for yes. Say no or press 2 for no.",
         voice="Polly.Joanna", language="en-US"
     ))
-    response.add(get_digits)
+    response.add(get_input)
 
     return plivo_response(response)
 
@@ -299,10 +305,9 @@ def confirm_pin():
     for _, row in results_df.iterrows():
         day = int(row.get('day', 1))
 
-        response.add(plivoxml.WaitElement(length=1))   # Plivo uses <Wait> instead of pause
+        response.add(plivoxml.WaitElement(length=1))
 
         response.add(plivoxml.SpeakElement(f"Sample from the {day}th.", voice="Polly.Joanna", language="en-US"))
-
         response.add(plivoxml.SpeakElement(f"Butterfat {row.get('fat', 0)} percent.", voice="Polly.Joanna", language="en-US"))
         response.add(plivoxml.SpeakElement(f"Protein {row.get('protein', 0)} percent.", voice="Polly.Joanna", language="en-US"))
         response.add(plivoxml.SpeakElement(f"Somatic cell count {int(row.get('scc', 0)):,}.", voice="Polly.Joanna", language="en-US"))
@@ -313,19 +318,21 @@ def confirm_pin():
         response.add(plivoxml.WaitElement(length=1))
 
     # Final action
-    get_digits = plivoxml.GetDigitsElement(
-        action="/handle_action",
-        method="POST",
-        num_digits=1,
-        timeout=10,
-        input_type="dtmf speech",
-        language="en-US"
+    get_input = (plivoxml.GetInputElement()
+        .set_action("/handle_action")
+        .set_method("POST")
+        .set_input_type("dtmf speech")
+        .set_num_digits(1)
+        .set_digit_end_timeout(5)
+        .set_timeout(12)
+        .set_language("en-US")
+        .set_redirect(True)
     )
-    get_digits.add(plivoxml.SpeakElement(
+    get_input.add(plivoxml.SpeakElement(
         "To repeat these results, say repeat or press 1. To end the call, say goodbye or press 2.",
         voice="Polly.Joanna", language="en-US"
     ))
-    response.add(get_digits)
+    response.add(get_input)
 
     return plivo_response(response)
 
