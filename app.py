@@ -93,7 +93,7 @@ def upload_csv():
         <p><a href="/status">Status</a></p>
     '''
 
-# ====================== VOICE ROUTES - OPTIMIZED FOR SPEECH ======================
+# ====================== VOICE ROUTES ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
@@ -107,13 +107,13 @@ def voice():
         num_digits=6,
         digit_end_timeout=8,
         speech_end_timeout=3,
-        speech_model="command_and_search",   # Better for numbers
-        hints="0 1 2 3 4 5 6 7 8 9",         # Help Plivo recognize digits
+        speech_model="command_and_search",
+        hints="0 1 2 3 4 5 6 7 8 9",
         language="en-US"
     )
 
     get_input.add(plivoxml.SpeakElement(
-        "Thank you for calling the Milk Market Administrator Test Results Center. Please say or enter your 6 digit PIN.",
+        "Thank you for calling. Please say or enter your 6 digit PIN clearly.",
         voice="Polly.Joanna", language="en-US"
     ))
 
@@ -133,10 +133,10 @@ def gather_pin():
     raw = digits if digits else speech
     logger.info(f"GATHER_PIN | Digits='{digits}' | Speech='{speech}'")
 
-    # Strong cleaning
+    # === STRONGEST CLEANING ===
     text = raw.lower()
 
-    # Replace spoken numbers
+    # Replace spoken words
     word_map = {
         "zero": "0", "oh": "0", "o": "0",
         "one": "1", "two": "2", "three": "3",
@@ -146,10 +146,10 @@ def gather_pin():
     for word, num in word_map.items():
         text = text.replace(word, num)
 
-    # Extract all digits
+    # Remove everything except digits
     pin = ''.join(filter(str.isdigit, text))
 
-    # Aggressive fallback
+    # Final aggressive fallback - take last 6 digits from any digits in raw
     if len(pin) != 6:
         all_digits = ''.join(filter(str.isdigit, raw))
         if len(all_digits) >= 6:
@@ -178,7 +178,7 @@ def gather_pin():
         response.add(get_input)
         return plivo_response(response)
 
-    # Success
+    # PIN accepted
     active_pins[call_uuid] = {"pin": pin}
     log_call("PIN_ACCEPTED", {"pin": pin})
 
