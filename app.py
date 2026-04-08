@@ -107,7 +107,7 @@ def voice():
         input_type="dtmf speech",
         num_digits=6,
         digit_end_timeout=8,
-        speech_end_timeout=2,          # Shortened as requested
+        speech_end_timeout=2,
         language="en-US"
     )
 
@@ -246,6 +246,7 @@ def confirm_pin():
         response.add(get_input)
         return plivo_response(response)
 
+    # Read the results
     response.add(plivoxml.SpeakElement("Here are your milk test results.", voice="Polly.Joanna", language="en-US"))
 
     for _, row in results_df.iterrows():
@@ -259,6 +260,7 @@ def confirm_pin():
             response.add(plivoxml.SpeakElement(f"Munn {int(row.get('mun', 0))}.", voice="Polly.Joanna", language="en-US"))
         response.add(plivoxml.WaitElement(length=1))
 
+    # Final menu after results
     get_input = plivoxml.GetInputElement(
         action=f"{BASE_URL}/handle_action",
         method="GET",
@@ -287,7 +289,7 @@ def handle_action():
 
     if digits == "1" or "repeat" in speech:
         response.add(plivoxml.SpeakElement("Repeating the results.", voice="Polly.Joanna", language="en-US"))
-        # Direct replay of results (no extra yes/no question)
+        # Direct replay - no extra yes/no question
         get_input = plivoxml.GetInputElement(
             action=f"{BASE_URL}/confirm_pin",
             method="GET",
@@ -298,10 +300,10 @@ def handle_action():
             language="en-US"
         )
         get_input.add(plivoxml.SpeakElement(
-            "Say yes or press 1 for yes. Say no or press 2 for no.",
+            "To hear these results again, say repeat or press 1. To end the call, say goodbye or press 2.",
             voice="Polly.Joanna", language="en-US"
         ))
-        response.add(get_input)
+        response.add(get_input)   # This replays results without asking "am I right"
     else:
         response.add(plivoxml.SpeakElement("Thank you for calling. Goodbye.", voice="Polly.Joanna", language="en-US"))
 
