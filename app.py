@@ -8,7 +8,7 @@ import shutil
 import re
 from datetime import datetime
 
-app = Flask(__name__)   # This line must be at the top
+app = Flask(__name__)
 
 # ====================== CONFIG ======================
 UPLOAD_PASSWORD = "ForUSDA!2026"
@@ -190,7 +190,7 @@ def confirm_pin():
 
     if not is_yes:
         response.add(plivoxml.SpeakElement("Okay, let's try again.", voice="Polly.Joanna", language="en-US"))
-        response.add(plivoxml.RedirectElement(f"{BASE_URL}/gather_pin"))   # Fixed: go back to asking for PIN
+        response.add(plivoxml.RedirectElement(f"{BASE_URL}/gather_pin"))   # Fixed: back to PIN entry
         return plivo_response(response)
 
     pin = active_pins.get(call_uuid, {}).get("pin")
@@ -248,7 +248,7 @@ def handle_action():
 
     if digits == "1" or "repeat" in speech:
         response.add(plivoxml.SpeakElement("Repeating the results.", voice="Polly.Joanna", language="en-US"))
-        response.add(plivoxml.RedirectElement(f"{BASE_URL}/confirm_pin"))   # Fixed: go back to results
+        response.add(plivoxml.RedirectElement(f"{BASE_URL}/confirm_pin"))   # Fixed: back to results
     else:
         response.add(plivoxml.SpeakElement("Thank you for calling. Goodbye.", voice="Polly.Joanna", language="en-US"))
 
