@@ -225,7 +225,7 @@ def confirm_pin():
         response.add(get_input)
         return plivo_response(response)
 
-    # === RESULTS READING with short SSML pause ===
+    # === RESULTS READING with prosody + break ===
     log_call("RESULTS_LOOKUP", {"pin": pin})
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
 
@@ -251,11 +251,23 @@ def confirm_pin():
 
     for _, row in results_df.iterrows():
         day = int(row.get('day', 1))
-        text = f"Sample from the {day}th. <break time=\"500ms\"/> Butterfat {row.get('fat', 0)} percent. <break time=\"500ms\"/> Protein {row.get('protein', 0)} percent. <break time=\"500ms\"/> Somatic cell count {int(row.get('scc', 0)):,}."
+        text = f"""
+            Sample from the {day}th. 
+            <break time="500ms"/>
+            Butterfat {row.get('fat', 0)} percent. 
+            <break time="500ms"/>
+            Protein {row.get('protein', 0)} percent. 
+            <break time="500ms"/>
+            Somatic cell count {int(row.get('scc', 0)):,}. 
+            <break time="500ms"/>
+        """
         if int(row.get('mun', 0)) > 0:
-            text += f" <break time=\"500ms\"/> Munn {int(row.get('mun', 0))}."
+            text += f" Munn {int(row.get('mun', 0))}."
 
-        response.add(plivoxml.SpeakElement(text, voice="Polly.Joanna", language="en-US"))
+        # Proper SSML with prosody + break
+        speak = plivoxml.SpeakElement(f'<prosody rate="medium">{text.strip()}</prosody>', 
+                                      voice="Polly.Joanna", language="en-US")
+        response.add(speak)
 
     # Final menu
     get_input = plivoxml.GetInputElement(
@@ -294,10 +306,22 @@ def handle_action():
             if not results_df.empty:
                 for _, row in results_df.iterrows():
                     day = int(row.get('day', 1))
-                    text = f"Sample from the {day}th. <break time=\"500ms\"/> Butterfat {row.get('fat', 0)} percent. <break time=\"500ms\"/> Protein {row.get('protein', 0)} percent. <break time=\"500ms\"/> Somatic cell count {int(row.get('scc', 0)):,}."
+                    text = f"""
+                        Sample from the {day}th. 
+                        <break time="500ms"/>
+                        Butterfat {row.get('fat', 0)} percent. 
+                        <break time="500ms"/>
+                        Protein {row.get('protein', 0)} percent. 
+                        <break time="500ms"/>
+                        Somatic cell count {int(row.get('scc', 0)):,}. 
+                        <break time="500ms"/>
+                    """
                     if int(row.get('mun', 0)) > 0:
-                        text += f" <break time=\"500ms\"/> Munn {int(row.get('mun', 0))}."
-                    response.add(plivoxml.SpeakElement(text, voice="Polly.Joanna", language="en-US"))
+                        text += f" Munn {int(row.get('mun', 0))}."
+
+                    speak = plivoxml.SpeakElement(f'<prosody rate="medium">{text.strip()}</prosody>', 
+                                                  voice="Polly.Joanna", language="en-US")
+                    response.add(speak)
 
         # Menu after repeat
         get_input = plivoxml.GetInputElement(
