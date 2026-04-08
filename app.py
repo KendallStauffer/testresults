@@ -5,7 +5,7 @@ import pandas as pd
 import os
 import logging
 import shutil
-import re   # Added for strong regex cleaning
+import re
 from datetime import datetime
 
 app = Flask(__name__)
@@ -94,7 +94,7 @@ def upload_csv():
         <p><a href="/status">Status</a></p>
     '''
 
-# ====================== VOICE ROUTES - OPTIMIZED ======================
+# ====================== VOICE ROUTES ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
@@ -108,8 +108,8 @@ def voice():
         num_digits=6,
         digit_end_timeout=8,
         speech_end_timeout=3,
-        speech_model="command_and_search",   # Better for numeric input
-        hints="0 1 2 3 4 5 6 7 8 9",         # Help with digits
+        speech_model="command_and_search",
+        hints="0 1 2 3 4 5 6 7 8 9",
         language="en-US"
     )
 
@@ -134,8 +134,8 @@ def gather_pin():
     raw = digits if digits else speech
     logger.info(f"GATHER_PIN | Digits='{digits}' | Speech='{speech}'")
 
-    # === SERVER-SIDE STRONG CLEANING (as you suggested) ===
-    pin = re.sub(r'\D', '', raw)   # Remove everything that is not a digit
+    # === SIMPLE AND STRONG CLEANING (as you suggested) ===
+    pin = re.sub(r'\D', '', raw)   # Remove all non-digit characters
 
     log_call("PIN_ATTEMPT", {"raw": raw, "cleaned_pin": pin, "length": len(pin)})
 
