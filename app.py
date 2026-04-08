@@ -93,7 +93,7 @@ def upload_csv():
         <p><a href="/status">Status</a></p>
     '''
 
-# ====================== VOICE ROUTES - TUNED FOR SPEECH ======================
+# ====================== VOICE ROUTES - FIXED ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
@@ -106,12 +106,12 @@ def voice():
         input_type="dtmf speech",
         num_digits=6,
         digit_end_timeout=8,
-        speech_end_timeout="auto",     # Important for speech
+        speech_end_timeout=3,        # Fixed: use number instead of "auto"
         language="en-US"
     )
 
     get_input.add(plivoxml.SpeakElement(
-        "Thank you for calling the Milk Market Administrator Test Results Center. Please say or enter your 6 digit PIN clearly.",
+        "Thank you for calling the Milk Market Administrator Test Results Center. Please say or enter your 6 digit PIN.",
         voice="Polly.Joanna", language="en-US"
     ))
 
@@ -128,13 +128,12 @@ def gather_pin():
     speech = request.values.get('SpeechResult', '').strip()
     call_uuid = request.values.get('CallUUID', 'unknown')
 
+    raw = digits if digits else speech
     logger.info(f"GATHER_PIN | Digits='{digits}' | Speech='{speech}'")
 
-    # Strong cleaning for both keypad and speech
-    raw = digits if digits else speech
+    # Improved cleaning for speech
     pin = ''.join(filter(str.isdigit, raw.replace("O", "0").replace("o", "0").replace(" ", "")))
 
-    # Extra speech number conversion
     if len(pin) != 6 and speech:
         word_map = {
             "zero": "0", "oh": "0", "o": "0",
@@ -145,7 +144,7 @@ def gather_pin():
         words = speech.lower().replace(".", " ").replace(",", " ").split()
         pin = ''.join(word_map.get(w, '') for w in words)
 
-    log_call("PIN_ATTEMPT", {"raw": raw, "pin": pin, "length": len(pin), "source": "speech" if speech else "dtmf"})
+    log_call("PIN_ATTEMPT", {"raw": raw, "pin": pin, "length": len(pin)})
 
     response = plivoxml.ResponseElement()
 
@@ -156,7 +155,7 @@ def gather_pin():
             input_type="dtmf speech",
             num_digits=6,
             digit_end_timeout=8,
-            speech_end_timeout="auto",
+            speech_end_timeout=3,
             language="en-US"
         )
         get_input.add(plivoxml.SpeakElement(
@@ -166,7 +165,6 @@ def gather_pin():
         response.add(get_input)
         return plivo_response(response)
 
-    # PIN accepted
     active_pins[call_uuid] = {"pin": pin}
     log_call("PIN_ACCEPTED", {"pin": pin})
 
@@ -179,7 +177,7 @@ def gather_pin():
         input_type="dtmf speech",
         num_digits=1,
         digit_end_timeout=10,
-        speech_end_timeout="auto",
+        speech_end_timeout=3,
         language="en-US"
     )
     get_input.add(plivoxml.SpeakElement(
@@ -239,7 +237,7 @@ def confirm_pin():
         input_type="dtmf speech",
         num_digits=1,
         digit_end_timeout=10,
-        speech_end_timeout="auto",
+        speech_end_timeout=3,
         language="en-US"
     )
     get_input.add(plivoxml.SpeakElement(
@@ -261,7 +259,7 @@ def handle_action():
 
     if digits == "1" or "repeat" in speech:
         response.add(plivoxml.SpeakElement("Repeating the results.", voice="Polly.Joanna", language="en-US"))
-        response.add(plivoxml.RedirectElement(f"{BASE_URL}/confirm_pin"))   # Go back to results
+        response.add(plivoxml.RedirectElement(f"{BASE_URL}/confirm_pin"))
     else:
         response.add(plivoxml.SpeakElement("Thank you for calling. Goodbye.", voice="Polly.Joanna", language="en-US"))
 
