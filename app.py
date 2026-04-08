@@ -45,19 +45,19 @@ def gather_pin():
     speech = request.values.get('SpeechResult', '').strip()
 
     raw = digits if digits else speech
-    logger.info(f"GATHER_PIN | raw = '{raw}'")
 
-    # Simple regex - remove everything that is not a digit
-    pin = re.sub(r'\D', '', raw)
+    logger.info(f"GATHER_PIN | raw received = '{raw}'")
+
+    pin = re.sub(r'\D', '', raw)        # This is the line that should clean it
 
     logger.info(f"Cleaned pin = '{pin}' (length = {len(pin)})")
 
     response = plivoxml.ResponseElement()
 
     if len(pin) == 6:
-        response.add(plivoxml.SpeakElement(f"Thank you. You said {pin}. Goodbye.", voice="Polly.Joanna", language="en-US"))
+        response.add(plivoxml.SpeakElement(f"Thank you. You said {pin}.", voice="Polly.Joanna", language="en-US"))
     else:
-        response.add(plivoxml.SpeakElement("Sorry, I didn't get 6 digits. Goodbye.", voice="Polly.Joanna", language="en-US"))
+        response.add(plivoxml.SpeakElement("Sorry, I didn't get 6 digits.", voice="Polly.Joanna", language="en-US"))
 
     response.add(plivoxml.HangupElement())
     return plivo_response(response)
