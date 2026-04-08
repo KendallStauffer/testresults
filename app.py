@@ -3,7 +3,7 @@ import plivo
 from plivo import plivoxml
 import logging
 import os
-import re   # This is required for regex cleaning
+import re
 
 app = Flask(__name__)
 
@@ -47,7 +47,7 @@ def gather_pin():
     raw = digits if digits else speech
     logger.info(f"GATHER_PIN | raw = '{raw}'")
 
-    # Simple and strong regex cleaning - exactly as you suggested
+    # Simple regex - remove everything that is not a digit
     pin = re.sub(r'\D', '', raw)
 
     logger.info(f"Cleaned pin = '{pin}' (length = {len(pin)})")
@@ -55,9 +55,9 @@ def gather_pin():
     response = plivoxml.ResponseElement()
 
     if len(pin) == 6:
-        response.add(plivoxml.SpeakElement(f"Thank you. You said {pin}.", voice="Polly.Joanna", language="en-US"))
+        response.add(plivoxml.SpeakElement(f"Thank you. You said {pin}. Goodbye.", voice="Polly.Joanna", language="en-US"))
     else:
-        response.add(plivoxml.SpeakElement("Sorry, I didn't get 6 digits.", voice="Polly.Joanna", language="en-US"))
+        response.add(plivoxml.SpeakElement("Sorry, I didn't get 6 digits. Goodbye.", voice="Polly.Joanna", language="en-US"))
 
     response.add(plivoxml.HangupElement())
     return plivo_response(response)
