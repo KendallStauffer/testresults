@@ -59,7 +59,7 @@ def log_call(event: str, extra: dict = None):
     details = " | ".join(f"{k}={v}" for k, v in extra.items()) if extra else ""
     logger.info(f"{event} | CallUUID={call_uuid} | From={from_number} {details}")
 
-# ====================== ADMIN PAGES ======================
+# ====================== ADMIN PAGES (unchanged) ======================
 @app.route("/status")
 def status():
     record_count = len(df) if not df.empty else 0
@@ -93,7 +93,7 @@ def upload_csv():
         <p><a href="/status">Status</a></p>
     '''
 
-# ====================== VOICE ROUTES - FIXED ======================
+# ====================== VOICE ROUTES ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
@@ -106,12 +106,12 @@ def voice():
         input_type="dtmf speech",
         num_digits=6,
         digit_end_timeout=8,
-        speech_end_timeout=3,        # Fixed: use number instead of "auto"
+        speech_end_timeout=3,
         language="en-US"
     )
 
     get_input.add(plivoxml.SpeakElement(
-        "Thank you for calling the Milk Market Administrator Test Results Center. Please say or enter your 6 digit PIN.",
+        "Thank you for calling. Please say or enter your 6 digit PIN clearly.",
         voice="Polly.Joanna", language="en-US"
     ))
 
@@ -131,18 +131,24 @@ def gather_pin():
     raw = digits if digits else speech
     logger.info(f"GATHER_PIN | Digits='{digits}' | Speech='{speech}'")
 
-    # Improved cleaning for speech
-    pin = ''.join(filter(str.isdigit, raw.replace("O", "0").replace("o", "0").replace(" ", "")))
+    # Improved speech number extraction
+    pin = ''
 
-    if len(pin) != 6 and speech:
+    if digits:
+        pin = ''.join(filter(str.isdigit, digits))
+    else:
+        # Speech handling
+        text = speech.lower()
         word_map = {
             "zero": "0", "oh": "0", "o": "0",
             "one": "1", "two": "2", "three": "3",
             "four": "4", "five": "5", "six": "6",
             "seven": "7", "eight": "8", "nine": "9"
         }
-        words = speech.lower().replace(".", " ").replace(",", " ").split()
-        pin = ''.join(word_map.get(w, '') for w in words)
+        # Replace words
+        for word, num in word_map.items():
+            text = text.replace(word, num)
+        pin = ''.join(filter(str.isdigit, text))
 
     log_call("PIN_ATTEMPT", {"raw": raw, "pin": pin, "length": len(pin)})
 
@@ -159,7 +165,7 @@ def gather_pin():
             language="en-US"
         )
         get_input.add(plivoxml.SpeakElement(
-            "Sorry, I didn't catch that. Please say or enter your 6 digit PIN again.",
+            "Sorry, I didn't understand. Please say or enter your 6 digit PIN again.",
             voice="Polly.Joanna", language="en-US"
         ))
         response.add(get_input)
@@ -189,15 +195,16 @@ def gather_pin():
     return plivo_response(response)
 
 
+# Keep the rest of your routes (confirm_pin and handle_action) as they were in the previous version
 @app.route("/confirm_pin", methods=['GET'])
 def confirm_pin():
     digits = request.values.get('Digits', '').strip()
     speech = request.values.get('SpeechResult', '').strip().lower()
     call_uuid = request.values.get('CallUUID')
 
-    is_yes = digits == "1" or any(word in speech for word in ["yes", "yeah", "correct", "right", "yep"])
-
     response = plivoxml.ResponseElement()
+
+    is_yes = digits == "1" or any(word in speech for word in ["yes", "yeah", "correct", "right", "yep"])
 
     if not is_yes:
         response.add(plivoxml.SpeakElement("Okay, let's try again.", voice="Polly.Joanna", language="en-US"))
