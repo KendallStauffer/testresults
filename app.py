@@ -225,7 +225,7 @@ def confirm_pin():
         response.add(get_input)
         return plivo_response(response)
 
-    # Read the results with short comma-style pause
+    # === RESULTS READING ===
     log_call("RESULTS_LOOKUP", {"pin": pin})
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
 
@@ -247,19 +247,23 @@ def confirm_pin():
         response.add(get_input)
         return plivo_response(response)
 
-    response.add(plivoxml.SpeakElement("Here are your milk test results.", voice="Polly.Joanna", language="en-US"))
+    try:
+        response.add(plivoxml.SpeakElement("Here are your milk test results.", voice="Polly.Joanna", language="en-US"))
 
-    for _, row in results_df.iterrows():
-        day = int(row.get('day', 1))
-        response.add(plivoxml.WaitElement(length=0.5))   # Short pause before each sample
-        response.add(plivoxml.SpeakElement(f"Sample from the {day}th.", voice="Polly.Joanna", language="en-US"))
-        response.add(plivoxml.SpeakElement(f"Butterfat {row.get('fat', 0)} percent.", voice="Polly.Joanna", language="en-US"))
-        response.add(plivoxml.SpeakElement(f"Protein {row.get('protein', 0)} percent.", voice="Polly.Joanna", language="en-US"))
-        response.add(plivoxml.SpeakElement(f"Somatic cell count {int(row.get('scc', 0)):,}.", voice="Polly.Joanna", language="en-US"))
-        if int(row.get('mun', 0)) > 0:
-            response.add(plivoxml.SpeakElement(f"Munn {int(row.get('mun', 0))}.", voice="Polly.Joanna", language="en-US"))
-        
-        response.add(plivoxml.WaitElement(length=0.5))   # Short comma-style pause between samples
+        for _, row in results_df.iterrows():
+            day = int(row.get('day', 1))
+            response.add(plivoxml.WaitElement(length=0.5))
+            response.add(plivoxml.SpeakElement(f"Sample from the {day}th.", voice="Polly.Joanna", language="en-US"))
+            response.add(plivoxml.SpeakElement(f"Butterfat {row.get('fat', 0)} percent.", voice="Polly.Joanna", language="en-US"))
+            response.add(plivoxml.SpeakElement(f"Protein {row.get('protein', 0)} percent.", voice="Polly.Joanna", language="en-US"))
+            response.add(plivoxml.SpeakElement(f"Somatic cell count {int(row.get('scc', 0)):,}.", voice="Polly.Joanna", language="en-US"))
+            if int(row.get('mun', 0)) > 0:
+                response.add(plivoxml.SpeakElement(f"Munn {int(row.get('mun', 0))}.", voice="Polly.Joanna", language="en-US"))
+            response.add(plivoxml.WaitElement(length=0.5))  # short comma pause
+
+    except Exception as e:
+        logger.error(f"Error building results XML: {e}")
+        response.add(plivoxml.SpeakElement("Sorry, there was an error reading the results.", voice="Polly.Joanna", language="en-US"))
 
     # Final menu
     get_input = plivoxml.GetInputElement(
@@ -307,12 +311,7 @@ def handle_action():
                         response.add(plivoxml.SpeakElement(f"Munn {int(row.get('mun', 0))}.", voice="Polly.Joanna", language="en-US"))
                     response.add(plivoxml.WaitElement(length=0.5))
 
-    else:
-        response.add(plivoxml.SpeakElement("Thank you for calling. Goodbye.", voice="Polly.Joanna", language="en-US"))
-        response.add(plivoxml.HangupElement())
-
-    # Final menu only after repeat
-    if digits == "1" or "repeat" in speech:
+        # Menu after repeat
         get_input = plivoxml.GetInputElement(
             action=f"{BASE_URL}/handle_action",
             method="GET",
@@ -327,6 +326,10 @@ def handle_action():
             voice="Polly.Joanna", language="en-US"
         ))
         response.add(get_input)
+
+    else:
+        response.add(plivoxml.SpeakElement("Thank you for calling. Goodbye.", voice="Polly.Joanna", language="en-US"))
+        response.add(plivoxml.HangupElement())
 
     return plivo_response(response)
 
