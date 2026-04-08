@@ -131,8 +131,10 @@ def gather_pin():
     raw = digits if digits else speech
     logger.info(f"GATHER_PIN | Digits='{digits}' | Speech='{speech}'")
 
-    # Stronger speech cleaning
-    text = raw.lower()
+    # === STRONG SPEECH CLEANING ===
+    text = speech.lower() if speech else ""
+
+    # Replace spoken numbers
     word_map = {
         "zero": "0", "oh": "0", "o": "0",
         "one": "1", "two": "2", "three": "3",
@@ -142,9 +144,10 @@ def gather_pin():
     for word, num in word_map.items():
         text = text.replace(word, num)
 
+    # Extract digits
     pin = ''.join(filter(str.isdigit, text))
 
-    # Final fallback
+    # Final fallback - take any 6 digits from raw input
     if len(pin) != 6:
         all_digits = ''.join(filter(str.isdigit, raw))
         if len(all_digits) >= 6:
