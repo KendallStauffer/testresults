@@ -24,7 +24,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-active_pins = {}
 df = pd.DataFrame()
 last_upload_time = "Never"
 
@@ -47,87 +46,72 @@ load_data()
 def plivo_response(resp: plivoxml.ResponseElement):
     return Response(resp.to_string(), mimetype="application/xml")
 
-def log_call(event: str, extra: dict = None):
+def log_call(event: str, extra=None):
     if extra is None: extra = {}
     call_uuid = request.values.get('CallUUID', 'unknown')
     from_number = request.values.get('From', 'unknown')
     details = " | ".join(f"{k}={v}" for k, v in extra.items()) if extra else ""
     logger.info(f"{event} | CallUUID={call_uuid} | From={from_number} {details}")
 
-# ====================== ADMIN PAGES ======================
+# ====================== ADMIN ======================
 @app.route("/status")
 def status():
     record_count = len(df) if not df.empty else 0
     return render_template_string('''
-        <!DOCTYPE html>
-        <html><head><title>MMA Status</title></head>
-        <body style="font-family: Arial; margin: 40px;">
-            <h2>Milk Market Administrator - Status</h2>
-            <p><strong>Records:</strong> {{ record_count }}</p>
-            <p><strong>Last Upload:</strong> {{ last_upload_time }}</p>
-            <p><a href="/upload">Upload New CSV</a></p>
-        </body></html>
+        <h2>MMA Status</h2>
+        <p>Records: {{ record_count }}</p>
+        <p>Last Upload: {{ last_upload_time }}</p>
+        <p><a href="/upload">Upload CSV</a></p>
     ''', record_count=record_count, last_upload_time=last_upload_time)
 
 @app.route("/upload", methods=['GET', 'POST'])
 def upload_csv():
     if request.method == 'POST':
         if request.form.get('password', '').strip() != UPLOAD_PASSWORD:
-            return "<h2>❌ Wrong Password</h2><p><a href='/upload'>Try again</a></p>", 401
-        
+            return "<h2>❌ Wrong Password</h2><a href='/upload'>Try again</a>", 401
         file = request.files.get('file')
         if not file or not file.filename.lower().endswith('.csv'):
-            return "<h2>❌ Upload a valid CSV file</h2>", 400
-
+            return "<h2>❌ Upload valid CSV</h2>", 400
         if os.path.exists(CSV_PATH):
-            shutil.copy(CSV_PATH, f"{BACKUP_DIR}/backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
-
+            shutil.copy(CSV_PATH, f"{BACKUP_DIR}/backup_{datetime.now():%Y%m%d_%H%M%S}.csv")
         file.save(CSV_PATH)
         load_data()
-        return f"<h2>✅ Success! Loaded {len(df)} records.</h2><p><a href='/upload'>Upload again</a> | <a href='/status'>Status</a></p>"
+        return f"<h2>✅ Success! {len(df)} records loaded.</h2><p><a href='/upload'>Upload again</a> | <a href='/status'>Status</a></p>"
+    return '''
+        <h2>MMA Upload</h2>
+        <form method="post" enctype="multipart/form-data">
+            Password: <input type="password" name="password"><br><br>
+            CSV File: <input type="file" name="file" accept=".csv"><br><br>
+            <button type="submit">Upload</button>
+        </form>
+        <p><a href="/status">Status</a></p>
+    '''
 
-    return render_template_string('''
-        <!DOCTYPE html>
-        <html><head><title>Upload</title></head>
-        <body style="font-family: Arial; max-width: 600px; margin: 40px auto;">
-            <h2>MMA Data Upload</h2>
-            <p>Password: ForUSDA!2026</p>
-            <form method="post" enctype="multipart/form-data">
-                <p>Password: <input type="password" name="password" required></p>
-                <p>File: <input type="file" name="file" accept=".csv" required></p>
-                <button type="submit">Upload CSV</button>
-            </form>
-            <p><a href="/status">View Status</a></p>
-        </body></html>
-    ''')
-
-# ====================== VOICE - MINIMAL & RELIABLE ======================
+# ====================== VOICE - SIMPLE DTMF ONLY ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
     log_call("INCOMING_CALL")
     response = plivoxml.ResponseElement()
 
+    # Very simple GetInput - only DTMF (most reliable)
     get_input = plivoxml.GetInputElement(
         action="/gather_pin",
         method="POST",
-        input_type="dtmf speech",
+        input_type="dtmf",          # ← Changed to dtmf only for now
         num_digits=6,
         digit_end_timeout=5,
-        speech_end_timeout=2,
-        redirect=True,
-        language="en-US"
+        redirect=True
     )
 
     get_input.add(plivoxml.SpeakElement(
-        "Thank you for calling the Milk Market Administrator. Please enter your 6 digit PIN.",
+        "Thank you for calling the Milk Market Administrator. Please enter your 6 digit PIN followed by the pound key.",
         voice="Polly.Joanna",
         language="en-US"
     ))
 
     response.add(get_input)
 
-    # Fallback if no input
     response.add(plivoxml.SpeakElement(
         "We didn't receive any input. Goodbye.",
         voice="Polly.Joanna",
@@ -141,13 +125,12 @@ def voice():
 def gather_pin():
     log_call("GATHER_PIN")
     digits = request.values.get('Digits', '').strip()
-    speech = request.values.get('SpeechResult', '').strip()
 
-    logger.info(f"Received - Digits: {digits} | Speech: {speech}")
+    logger.info(f"Received Digits: {digits}")
 
     response = plivoxml.ResponseElement()
     response.add(plivoxml.SpeakElement(
-        "Thank you. Your input was received.",
+        f"Thank you. You entered {digits}. Goodbye for now.",
         voice="Polly.Joanna",
         language="en-US"
     ))
