@@ -53,65 +53,65 @@ def log_call(event: str, extra=None):
     details = " | ".join(f"{k}={v}" for k, v in extra.items()) if extra else ""
     logger.info(f"{event} | CallUUID={call_uuid} | From={from_number} {details}")
 
-# ====================== ADMIN ======================
+# ====================== ADMIN PAGES ======================
 @app.route("/status")
 def status():
     record_count = len(df) if not df.empty else 0
     return render_template_string('''
-        <h2>MMA Status</h2>
+        <h2>MMA System Status</h2>
         <p>Records: {{ record_count }}</p>
         <p>Last Upload: {{ last_upload_time }}</p>
-        <p><a href="/upload">Upload CSV</a></p>
+        <p><a href="/upload">Upload New CSV</a></p>
     ''', record_count=record_count, last_upload_time=last_upload_time)
 
 @app.route("/upload", methods=['GET', 'POST'])
 def upload_csv():
     if request.method == 'POST':
         if request.form.get('password', '').strip() != UPLOAD_PASSWORD:
-            return "<h2>❌ Wrong Password</h2><a href='/upload'>Try again</a>", 401
+            return "<h2>❌ Wrong Password</h2><p><a href='/upload'>Try again</a></p>", 401
         file = request.files.get('file')
         if not file or not file.filename.lower().endswith('.csv'):
-            return "<h2>❌ Upload valid CSV</h2>", 400
+            return "<h2>❌ Please upload a valid CSV</h2>", 400
         if os.path.exists(CSV_PATH):
-            shutil.copy(CSV_PATH, f"{BACKUP_DIR}/backup_{datetime.now():%Y%m%d_%H%M%S}.csv")
+            shutil.copy(CSV_PATH, f"{BACKUP_DIR}/backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
         file.save(CSV_PATH)
         load_data()
-        return f"<h2>✅ Success! {len(df)} records loaded.</h2><p><a href='/upload'>Upload again</a> | <a href='/status'>Status</a></p>"
+        return f"<h2>✅ Success! Loaded {len(df)} records.</h2><p><a href='/upload'>Upload again</a> | <a href='/status'>Status</a></p>"
     return '''
-        <h2>MMA Upload</h2>
+        <h2>MMA Data Upload</h2>
         <form method="post" enctype="multipart/form-data">
-            Password: <input type="password" name="password"><br><br>
-            CSV File: <input type="file" name="file" accept=".csv"><br><br>
+            Password: <input type="password" name="password" required><br><br>
+            CSV File: <input type="file" name="file" accept=".csv" required><br><br>
             <button type="submit">Upload</button>
         </form>
-        <p><a href="/status">Status</a></p>
+        <p><a href="/status">View Status</a></p>
     '''
 
-# ====================== VOICE - SIMPLE DTMF ONLY ======================
+# ====================== VOICE - MINIMAL WORKING VERSION ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
     log_call("INCOMING_CALL")
     response = plivoxml.ResponseElement()
 
-    # Very simple GetInput - only DTMF (most reliable)
+    # Minimal GetInput - following Plivo official examples closely
     get_input = plivoxml.GetInputElement(
         action="/gather_pin",
         method="POST",
-        input_type="dtmf",          # ← Changed to dtmf only for now
+        input_type="dtmf",           # Start with DTMF only (most reliable)
         num_digits=6,
-        digit_end_timeout=5,
         redirect=True
     )
 
     get_input.add(plivoxml.SpeakElement(
-        "Thank you for calling the Milk Market Administrator. Please enter your 6 digit PIN followed by the pound key.",
+        "Thank you for calling the Milk Market Administrator. Please enter your 6 digit PIN.",
         voice="Polly.Joanna",
         language="en-US"
     ))
 
     response.add(get_input)
 
+    # Fallback
     response.add(plivoxml.SpeakElement(
         "We didn't receive any input. Goodbye.",
         voice="Polly.Joanna",
@@ -126,11 +126,11 @@ def gather_pin():
     log_call("GATHER_PIN")
     digits = request.values.get('Digits', '').strip()
 
-    logger.info(f"Received Digits: {digits}")
+    logger.info(f"Received digits: {digits}")
 
     response = plivoxml.ResponseElement()
     response.add(plivoxml.SpeakElement(
-        f"Thank you. You entered {digits}. Goodbye for now.",
+        f"Thank you. You entered {digits}. Goodbye.",
         voice="Polly.Joanna",
         language="en-US"
     ))
