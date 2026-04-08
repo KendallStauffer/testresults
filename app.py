@@ -5,6 +5,7 @@ import pandas as pd
 import os
 import logging
 import shutil
+import re   # Added for strong regex cleaning
 from datetime import datetime
 
 app = Flask(__name__)
@@ -93,7 +94,7 @@ def upload_csv():
         <p><a href="/status">Status</a></p>
     '''
 
-# ====================== VOICE ROUTES ======================
+# ====================== VOICE ROUTES - OPTIMIZED ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
@@ -107,8 +108,8 @@ def voice():
         num_digits=6,
         digit_end_timeout=8,
         speech_end_timeout=3,
-        speech_model="command_and_search",
-        hints="0 1 2 3 4 5 6 7 8 9",
+        speech_model="command_and_search",   # Better for numeric input
+        hints="0 1 2 3 4 5 6 7 8 9",         # Help with digits
         language="en-US"
     )
 
@@ -133,27 +134,8 @@ def gather_pin():
     raw = digits if digits else speech
     logger.info(f"GATHER_PIN | Digits='{digits}' | Speech='{speech}'")
 
-    # === STRONGEST CLEANING ===
-    text = raw.lower()
-
-    # Replace spoken words
-    word_map = {
-        "zero": "0", "oh": "0", "o": "0",
-        "one": "1", "two": "2", "three": "3",
-        "four": "4", "five": "5", "six": "6",
-        "seven": "7", "eight": "8", "nine": "9"
-    }
-    for word, num in word_map.items():
-        text = text.replace(word, num)
-
-    # Remove everything except digits
-    pin = ''.join(filter(str.isdigit, text))
-
-    # Final aggressive fallback - take last 6 digits from any digits in raw
-    if len(pin) != 6:
-        all_digits = ''.join(filter(str.isdigit, raw))
-        if len(all_digits) >= 6:
-            pin = all_digits[-6:]
+    # === SERVER-SIDE STRONG CLEANING (as you suggested) ===
+    pin = re.sub(r'\D', '', raw)   # Remove everything that is not a digit
 
     log_call("PIN_ATTEMPT", {"raw": raw, "cleaned_pin": pin, "length": len(pin)})
 
