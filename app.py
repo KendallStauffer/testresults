@@ -225,7 +225,7 @@ def confirm_pin():
         response.add(get_input)
         return plivo_response(response)
 
-    # === RESULTS READING with short natural pauses (multiple Speak elements) ===
+    # === RESULTS READING with natural short pauses ===
     log_call("RESULTS_LOOKUP", {"pin": pin})
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
 
