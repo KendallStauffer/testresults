@@ -44,9 +44,6 @@ def load_data():
 
 load_data()
 
-def speak_pin_digits(pin: str):
-    return " ".join(list(pin))
-
 def plivo_response(resp: plivoxml.ResponseElement):
     return Response(resp.to_string(), mimetype="application/xml")
 
@@ -63,12 +60,12 @@ def status():
     record_count = len(df) if not df.empty else 0
     return render_template_string('''
         <!DOCTYPE html>
-        <html><head><title>MMA System Status</title></head>
+        <html><head><title>MMA Status</title></head>
         <body style="font-family: Arial; margin: 40px;">
-            <h2>Milk Market Administrator - System Status</h2>
-            <p><strong>Current Records:</strong> {{ record_count }}</p>
-            <p><strong>Last Data Upload:</strong> {{ last_upload_time }}</p>
-            <hr><p><a href="/upload">Upload New Data File</a></p>
+            <h2>Milk Market Administrator - Status</h2>
+            <p><strong>Records:</strong> {{ record_count }}</p>
+            <p><strong>Last Upload:</strong> {{ last_upload_time }}</p>
+            <p><a href="/upload">Upload New CSV</a></p>
         </body></html>
     ''', record_count=record_count, last_upload_time=last_upload_time)
 
@@ -76,46 +73,41 @@ def status():
 def upload_csv():
     if request.method == 'POST':
         if request.form.get('password', '').strip() != UPLOAD_PASSWORD:
-            return "<h2>❌ Incorrect Password</h2><p><a href='/upload'>Try again</a></p>", 401
-
+            return "<h2>❌ Wrong Password</h2><p><a href='/upload'>Try again</a></p>", 401
+        
         file = request.files.get('file')
-        if not file or file.filename == '' or not file.filename.lower().endswith('.csv'):
-            return "<h2>❌ Please upload a valid .csv file</h2>", 400
+        if not file or not file.filename.lower().endswith('.csv'):
+            return "<h2>❌ Upload a valid CSV file</h2>", 400
 
         if os.path.exists(CSV_PATH):
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            shutil.copy(CSV_PATH, f"{BACKUP_DIR}/test_results_long_{timestamp}.csv")
+            shutil.copy(CSV_PATH, f"{BACKUP_DIR}/backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
 
         file.save(CSV_PATH)
-        logger.info("New CSV uploaded")
         load_data()
-        return f"<h2>✅ Upload Successful! Loaded {len(df)} records.</h2><p><a href='/upload'>Upload another</a> | <a href='/status'>Status</a></p>"
+        return f"<h2>✅ Success! Loaded {len(df)} records.</h2><p><a href='/upload'>Upload again</a> | <a href='/status'>Status</a></p>"
 
-    record_count = len(df) if not df.empty else 0
     return render_template_string('''
         <!DOCTYPE html>
-        <html><head><title>MMA Data Upload</title></head>
+        <html><head><title>Upload</title></head>
         <body style="font-family: Arial; max-width: 600px; margin: 40px auto;">
-            <h2>Milk Market Administrator - Data Upload</h2>
-            <p><strong>Password:</strong> ForUSDA!2026</p>
+            <h2>MMA Data Upload</h2>
+            <p>Password: ForUSDA!2026</p>
             <form method="post" enctype="multipart/form-data">
                 <p>Password: <input type="password" name="password" required></p>
                 <p>File: <input type="file" name="file" accept=".csv" required></p>
                 <button type="submit">Upload CSV</button>
             </form>
-            <p>Current records: <strong>{{ record_count }}</strong></p>
             <p><a href="/status">View Status</a></p>
         </body></html>
-    ''', record_count=record_count)
+    ''')
 
-# ====================== VOICE ROUTES - SIMPLIFIED & FIXED ======================
+# ====================== VOICE - MINIMAL & RELIABLE ======================
 
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
     log_call("INCOMING_CALL")
     response = plivoxml.ResponseElement()
 
-    # Simple welcome + GetInput
     get_input = plivoxml.GetInputElement(
         action="/gather_pin",
         method="POST",
@@ -128,16 +120,18 @@ def voice():
     )
 
     get_input.add(plivoxml.SpeakElement(
-        "Thank you for calling the Milk Market Administrator Test Results Center. Please enter your 6 digit PIN.",
-        voice="Polly.Joanna", language="en-US"
+        "Thank you for calling the Milk Market Administrator. Please enter your 6 digit PIN.",
+        voice="Polly.Joanna",
+        language="en-US"
     ))
 
     response.add(get_input)
 
-    # Fallback
+    # Fallback if no input
     response.add(plivoxml.SpeakElement(
         "We didn't receive any input. Goodbye.",
-        voice="Polly.Joanna", language="en-US"
+        voice="Polly.Joanna",
+        language="en-US"
     ))
 
     return plivo_response(response)
@@ -145,19 +139,22 @@ def voice():
 
 @app.route("/gather_pin", methods=['POST'])
 def gather_pin():
-    # ... (I'll keep this part minimal for now — add back your full logic after we confirm the call connects)
     log_call("GATHER_PIN")
-    digits = request.values.get('Digits', '')
-    speech = request.values.get('SpeechResult', '')
+    digits = request.values.get('Digits', '').strip()
+    speech = request.values.get('SpeechResult', '').strip()
+
+    logger.info(f"Received - Digits: {digits} | Speech: {speech}")
 
     response = plivoxml.ResponseElement()
-    response.add(plivoxml.SpeakElement("Thank you. Processing your PIN.", voice="Polly.Joanna", language="en-US"))
+    response.add(plivoxml.SpeakElement(
+        "Thank you. Your input was received.",
+        voice="Polly.Joanna",
+        language="en-US"
+    ))
     response.add(plivoxml.HangupElement())
 
     return plivo_response(response)
 
-
-# Keep your other routes (/confirm_pin, /handle_action, admin) if you want, but first test with this minimal version.
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
