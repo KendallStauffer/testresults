@@ -225,7 +225,7 @@ def confirm_pin():
         response.add(get_input)
         return plivo_response(response)
 
-    # === RESULTS READING - short natural pauses ===
+    # === RESULTS READING with short SSML pause ===
     log_call("RESULTS_LOOKUP", {"pin": pin})
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
 
@@ -251,15 +251,20 @@ def confirm_pin():
 
     for _, row in results_df.iterrows():
         day = int(row.get('day', 1))
-        response.add(plivoxml.SpeakElement(f"Sample from the {day}th.", voice="Polly.Joanna", language="en-US"))
-        response.add(plivoxml.SpeakElement(f"Butterfat {row.get('fat', 0)} percent.", voice="Polly.Joanna", language="en-US"))
-        response.add(plivoxml.SpeakElement(f"Protein {row.get('protein', 0)} percent.", voice="Polly.Joanna", language="en-US"))
-        response.add(plivoxml.SpeakElement(f"Somatic cell count {int(row.get('scc', 0)):,}.", voice="Polly.Joanna", language="en-US"))
+        speak_text = f'''
+            Sample from the {day}th. 
+            <break time="500ms"/>
+            Butterfat {row.get('fat', 0)} percent. 
+            <break time="500ms"/>
+            Protein {row.get('protein', 0)} percent. 
+            <break time="500ms"/>
+            Somatic cell count {int(row.get('scc', 0)):,}. 
+            <break time="500ms"/>
+        '''
         if int(row.get('mun', 0)) > 0:
-            response.add(plivoxml.SpeakElement(f"Munn {int(row.get('mun', 0))}.", voice="Polly.Joanna", language="en-US"))
-        
-        # Short comma-style pause (no WaitElement to avoid invalid XML risk)
-        response.add(plivoxml.SpeakElement(".", voice="Polly.Joanna", language="en-US"))  # very short break
+            speak_text += f'''Munn {int(row.get('mun', 0))}.'''
+
+        response.add(plivoxml.SpeakElement(speak_text.strip(), voice="Polly.Joanna", language="en-US"))
 
     # Final menu
     get_input = plivoxml.GetInputElement(
@@ -298,20 +303,22 @@ def handle_action():
             if not results_df.empty:
                 for _, row in results_df.iterrows():
                     day = int(row.get('day', 1))
-                    response.add(plivoxml.SpeakElement(f"Sample from the {day}th.", voice="Polly.Joanna", language="en-US"))
-                    response.add(plivoxml.SpeakElement(f"Butterfat {row.get('fat', 0)} percent.", voice="Polly.Joanna", language="en-US"))
-                    response.add(plivoxml.SpeakElement(f"Protein {row.get('protein', 0)} percent.", voice="Polly.Joanna", language="en-US"))
-                    response.add(plivoxml.SpeakElement(f"Somatic cell count {int(row.get('scc', 0)):,}.", voice="Polly.Joanna", language="en-US"))
+                    speak_text = f'''
+                        Sample from the {day}th. 
+                        <break time="500ms"/>
+                        Butterfat {row.get('fat', 0)} percent. 
+                        <break time="500ms"/>
+                        Protein {row.get('protein', 0)} percent. 
+                        <break time="500ms"/>
+                        Somatic cell count {int(row.get('scc', 0)):,}. 
+                        <break time="500ms"/>
+                    '''
                     if int(row.get('mun', 0)) > 0:
-                        response.add(plivoxml.SpeakElement(f"Munn {int(row.get('mun', 0))}.", voice="Polly.Joanna", language="en-US"))
-                    response.add(plivoxml.SpeakElement(".", voice="Polly.Joanna", language="en-US"))  # short comma break
+                        speak_text += f'''Munn {int(row.get('mun', 0))}.'''
 
-    else:
-        response.add(plivoxml.SpeakElement("Thank you for calling. Goodbye.", voice="Polly.Joanna", language="en-US"))
-        response.add(plivoxml.HangupElement())
+                    response.add(plivoxml.SpeakElement(speak_text.strip(), voice="Polly.Joanna", language="en-US"))
 
-    # Final menu after repeat
-    if digits == "1" or "repeat" in speech:
+        # Menu after repeat
         get_input = plivoxml.GetInputElement(
             action=f"{BASE_URL}/handle_action",
             method="GET",
@@ -326,6 +333,10 @@ def handle_action():
             voice="Polly.Joanna", language="en-US"
         ))
         response.add(get_input)
+
+    else:
+        response.add(plivoxml.SpeakElement("Thank you for calling. Goodbye.", voice="Polly.Joanna", language="en-US"))
+        response.add(plivoxml.HangupElement())
 
     return plivo_response(response)
 
