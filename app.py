@@ -13,9 +13,9 @@ UPLOAD_PASSWORD = "ForUSDA!2026"
 CSV_PATH = "/mnt/data/test_results_long.csv"
 LOG_PATH = "/mnt/data/call_logs.csv"
 BACKUP_DIR = "/mnt/data/backups"
-
 BASE_URL = "https://testresults-1aja.onrender.com"
 
+os.makedirs("/mnt/data", exist_ok=True)
 os.makedirs(BACKUP_DIR, exist_ok=True)
 
 # ====================== LOGGING ======================
@@ -28,15 +28,13 @@ logger = logging.getLogger(__name__)
 
 active_pins = {}
 df = pd.DataFrame()
-last_upload_time = "Never"
 
 def load_data():
-    global df, last_upload_time
+    global df
     try:
         if os.path.exists(CSV_PATH):
             df = pd.read_csv(CSV_PATH)
             df['Pin_Number'] = df['Pin_Number'].astype(str).str.strip().str.zfill(6)
-            last_upload_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             logger.info(f"✅ Loaded {len(df)} records from CSV")
             return True
         logger.info("No test_results_long.csv found yet")
@@ -50,15 +48,14 @@ load_data()
 def init_call_log():
     if not os.path.exists(LOG_PATH):
         pd.DataFrame(columns=['Timestamp', 'CallerID', 'CallUUID', 'EnteredPIN', 'Status', 'Notes']).to_csv(LOG_PATH, index=False)
-        logger.info("✅ Created new call_logs.csv - will ONLY append from now on")
+        logger.info("✅ Created new call_logs.csv")
     else:
-        logger.info("call_logs.csv already exists - will append only (no overwrite ever)")
+        logger.info("call_logs.csv already exists - will append only")
 
 init_call_log()
 
 def log_call_to_csv(caller_id, call_uuid, entered_pin="", status="PIN Rejected", notes=""):
     try:
-        file_exists = os.path.exists(LOG_PATH)
         new_row = pd.DataFrame([{
             'Timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             'CallerID': caller_id,
@@ -67,10 +64,10 @@ def log_call_to_csv(caller_id, call_uuid, entered_pin="", status="PIN Rejected",
             'Status': status,
             'Notes': notes
         }])
-        new_row.to_csv(LOG_PATH, mode='a', header=not file_exists, index=False)
-        logger.info(f"✅ LOGGED: PIN={entered_pin} | Status={status} | Notes={notes}")
+        new_row.to_csv(LOG_PATH, mode='a', header=False, index=False)
+        logger.info(f"✅ APPENDED TO CSV: PIN={entered_pin} | Status={status} | Notes={notes}")
     except Exception as e:
-        logger.error(f"❌ Failed to append log: {e}")
+        logger.error(f"❌ Failed to append to call_logs.csv: {e}")
 
 def speak_pin_digits(pin: str):
     return " ".join(list(pin))
@@ -144,22 +141,49 @@ def voice():
     log_call("INCOMING_CALL")
     xml = f'''<Response>
   <GetInput action="{BASE_URL}/gather_pin" method="GET" inputType="dtmf speech" numDigits="6" 
-            digitEndTimeout="5" speechEndTimeout="3" speechModel="command_and_search"
-            hints="0,1,2,3,4,5,6,7,8,9,zero,oh">
-    <Speak voice="Polly.Joanna" language="en-US">
-      Thank you for calling the Milk Market Administrator Test Results Center. Please say or enter your 6 digit PIN.
-    </Speak>
+            digitEndTimeout="5" speechEndTimeout="3" speechModel="command_and_search" 
+            hints="0,1,2,3,4,5,6,7,8,9,zero,oh" language="en-US">
+    <Speak voice="Polly.Joanna" language="en-US">Thank you for calling the Milk Market Administrator Test Results Center. Please say or enter your 6 digit PIN.</Speak>
   </GetInput>
   <Speak voice="Polly.Joanna" language="en-US">We didn't receive any input. Goodbye.</Speak>
 </Response>'''
     return plivo_response(xml)
 
-def pin_retry_prompt():
-    """Return XML for slow-digit retry prompt"""
-    return f'''<Response>
-  <GetInput action="{BASE_URL}/gather_pin" method="GET" inputType="dtmf speech" numDigits="6"
-            digitEndTimeout="5" speechEndTimeout="3" speechModel="phone_call"
-            hints="0,1,2,3,4,5,6,7,8,9,zero,oh">
+# ====================== PIN GATHER ======================
+@app.route("/gather_pin", methods=['GET'])
+def gather_pin():
+    try:
+        digits = request.values.get('Digits', '').strip()
+        speech = (request.values.get('SpeechResult', '') or request.values.get('Speech', '')).strip()
+        raw = digits if digits else speech
+        raw = raw.lower().replace("zero", "0").replace("oh", "0").replace("o", "0")
+        pin = re.sub(r'\D', '', raw)
+        caller = request.values.get('From', 'unknown')
+        call_uuid = request.values.get('CallUUID', 'unknown')
+
+        logger.info(f"RAW INPUT: '{raw}' | PIN: '{pin}'")
+
+        # Accept 5-digit PINs always, else must be 6 digits
+        if len(pin) == 5 or len(pin) == 6:
+            active_pins[call_uuid] = {"pin": pin}
+            log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", "Successful pin attempt")
+            spoken = speak_pin_digits(pin)
+            xml = f'''<Response>
+  <Speak voice="Polly.Joanna" language="en-US">You said {spoken}. Am I right?</Speak>
+  <GetInput action="{BASE_URL}/confirm_pin" method="GET"
+            inputType="dtmf speech" numDigits="1" digitEndTimeout="10" speechEndTimeout="2"
+            hints="1,2,yes,no">
+    <Speak voice="Polly.Joanna" language="en-US">Say yes or press 1. Say no or press 2.</Speak>
+  </GetInput>
+</Response>'''
+            return plivo_response(xml)
+
+        # Invalid PIN: show slow-digit retry
+        logger.info("Invalid PIN detected, sending slow-digit retry prompt")
+        xml = f'''<Response>
+  <GetInput action="{BASE_URL}/gather_pin" method="GET"
+            inputType="dtmf speech" numDigits="6" digitEndTimeout="5" speechEndTimeout="3"
+            speechModel="phone_call" hints="0,1,2,3,4,5,6,7,8,9,zero,oh">
     <Speak voice="Polly.Joanna" language="en-US">
       I'm sorry, I didn't get that.
       Please say your six digit PIN one number at a time.
@@ -167,77 +191,73 @@ def pin_retry_prompt():
     </Speak>
   </GetInput>
 </Response>'''
+        return plivo_response(xml)
 
-@app.route("/gather_pin", methods=['GET'])
-def gather_pin():
-    digits = request.values.get('Digits', '').strip()
-    speech = request.values.get('SpeechResult', '').strip() or request.values.get('Speech', '').strip()
-    raw = digits if digits else speech
-
-    # Normalize zeros
-    raw = raw.lower().replace("zero", "0").replace("oh", "0").replace("o", "0")
-    pin = re.sub(r'\D', '', raw)
-
-    confidence = float(request.values.get('SpeechConfidenceScore', 0))
-    logger.info(f"RAW SPEECH: '{raw}' | PIN: '{pin}' | Confidence: {confidence}")
-
-    # Accept 5 digits as valid (special case)
-    pin_valid = len(pin) == 5 or (len(pin) == 6 and confidence >= 0.4)
-
-    if not pin_valid:
-        return plivo_response(pin_retry_prompt())
-
-    # Trim extra digits if >6
-    if len(pin) > 6:
-        pin = pin[:6]
-
-    caller = request.values.get('From', 'unknown')
-    call_uuid = request.values.get('CallUUID', 'unknown')
-
-    active_pins[call_uuid] = {"pin": pin}
-    log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", "Successful pin attempt - results read")
-
-    spoken = speak_pin_digits(pin)
-    xml = f'''<Response>
-  <Speak voice="Polly.Joanna" language="en-US">You said {spoken}. Am I right?</Speak>
-  <GetInput action="{BASE_URL}/confirm_pin" method="GET" inputType="dtmf speech" numDigits="1"
-            digitEndTimeout="10" speechEndTimeout="2"
-            hints="1,2,yes,no">
-    <Speak voice="Polly.Joanna" language="en-US">Say yes or press 1. Say no or press 2.</Speak>
+    except Exception as e:
+        logger.error(f"Error in /gather_pin: {e}")
+        return plivo_response(f'''<Response>
+  <GetInput action="{BASE_URL}/gather_pin" method="GET"
+            inputType="dtmf speech" numDigits="6" digitEndTimeout="5" speechEndTimeout="3"
+            speechModel="phone_call" hints="0,1,2,3,4,5,6,7,8,9,zero,oh">
+    <Speak voice="Polly.Joanna" language="en-US">
+      I'm sorry, I didn't get that.
+      Please say your six digit PIN one number at a time.
+      For example: one… two… three… four… five… six.
+    </Speak>
   </GetInput>
-</Response>'''
-    return plivo_response(xml)
+</Response>''')
 
+# ====================== CONFIRM PIN ======================
 @app.route("/confirm_pin", methods=['GET'])
 def confirm_pin():
-    digits = request.values.get('Digits', '').strip()
-    speech = (request.values.get('SpeechResult', '') or request.values.get('Speech', '')).lower()
-    call_uuid = request.values.get('CallUUID')
+    try:
+        digits = request.values.get('Digits', '').strip()
+        speech = (request.values.get('SpeechResult', '') or request.values.get('Speech', '')).lower()
+        call_uuid = request.values.get('CallUUID')
+        caller = request.values.get('From', 'unknown')
 
-    is_yes = digits == "1" or any(w in speech for w in ["yes", "yeah", "yep", "correct", "right"])
-    if not is_yes:
-        logger.info("User said NO to PIN confirmation")
-        return plivo_response(pin_retry_prompt())
+        pin = active_pins.get(call_uuid, {}).get("pin", "")
+        is_yes = digits == "1" or any(w in speech for w in ["yes", "yeah", "yep", "correct", "right"])
 
-    pin = active_pins.get(call_uuid, {}).get("pin")
-    if not pin:
-        logger.info("No pin found in active_pins")
-        return plivo_response(pin_retry_prompt())
+        if not is_yes or not pin:
+            logger.info("User said NO to PIN confirmation or PIN missing")
+            xml = f'''<Response>
+  <GetInput action="{BASE_URL}/gather_pin" method="GET"
+            inputType="dtmf speech" numDigits="6" digitEndTimeout="5" speechEndTimeout="3"
+            speechModel="phone_call" hints="0,1,2,3,4,5,6,7,8,9,zero,oh">
+    <Speak voice="Polly.Joanna" language="en-US">
+      I'm sorry, I didn't get that.
+      Please say your six digit PIN one number at a time.
+      For example: one… two… three… four… five… six.
+    </Speak>
+  </GetInput>
+</Response>'''
+            return plivo_response(xml)
 
-    log_call_to_csv(request.values.get('From', 'unknown'), call_uuid, pin, "PIN Accepted", "Results read")
-    results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
-    if results_df.empty:
-        return plivo_response(pin_retry_prompt())
+        log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", "Results read")
+        results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
+        if results_df.empty:
+            return plivo_response(f'''<Response>
+  <GetInput action="{BASE_URL}/gather_pin" method="GET"
+            inputType="dtmf speech" numDigits="6" digitEndTimeout="5" speechEndTimeout="3"
+            speechModel="phone_call" hints="0,1,2,3,4,5,6,7,8,9,zero,oh">
+    <Speak voice="Polly.Joanna" language="en-US">
+      I'm sorry, I didn't get that.
+      Please say your six digit PIN one number at a time.
+      For example: one… two… three… four… five… six.
+    </Speak>
+  </GetInput>
+</Response>''')
 
-    xml = f'''<Response>
+        xml = f'''<Response>
   <Speak voice="Polly.Joanna" language="en-US">Here are your milk test results.</Speak>'''
-    for _, row in results_df.iterrows():
-        day = int(row.get('day', 1))
-        fat = float(row.get('fat', 0))
-        protein = float(row.get('protein', 0))
-        scc = int(row.get('scc', 0))
-        mun = int(row.get('mun', 0))
-        xml += f'''
+        for _, row in results_df.iterrows():
+            day = int(row.get('day', 1))
+            fat = float(row.get('fat', 0))
+            protein = float(row.get('protein', 0))
+            scc = int(row.get('scc', 0))
+            mun = int(row.get('mun', 0))
+            xml += f'''
   <Speak voice="Polly.Joanna" language="en-US">
     <prosody rate="medium">
 Sample from the {day}th.
@@ -250,62 +270,90 @@ Somatic cell count {scc:,}.
 <break time="600ms"/>
     </prosody>
   </Speak>'''
-        if mun > 0:
-            xml += f'''
+            if mun > 0:
+                xml += f'''
   <Speak voice="Polly.Joanna" language="en-US">
     <prosody rate="medium">Munn {mun}.</prosody>
   </Speak>'''
 
-    xml += f'''
-  <GetInput action="{BASE_URL}/handle_action" method="GET" inputType="dtmf speech" numDigits="1"
-            digitEndTimeout="10" speechEndTimeout="2">
+        xml += f'''
+  <GetInput action="{BASE_URL}/handle_action" method="GET"
+            inputType="dtmf speech" numDigits="1" digitEndTimeout="10" speechEndTimeout="2"
+            hints="1,2,repeat,yes,no,goodbye,end">
     <Speak voice="Polly.Joanna" language="en-US">
       To hear these results again, say repeat or press 1. To end the call, say goodbye or press 2.
     </Speak>
   </GetInput>
 </Response>'''
-    return plivo_response(xml)
+        return plivo_response(xml)
 
+    except Exception as e:
+        logger.error(f"Error in /confirm_pin: {e}")
+        return plivo_response(f'''<Response>
+  <GetInput action="{BASE_URL}/gather_pin" method="GET"
+            inputType="dtmf speech" numDigits="6" digitEndTimeout="5" speechEndTimeout="3"
+            speechModel="phone_call" hints="0,1,2,3,4,5,6,7,8,9,zero,oh">
+    <Speak voice="Polly.Joanna" language="en-US">
+      I'm sorry, I didn't get that.
+      Please say your six digit PIN one number at a time.
+      For example: one… two… three… four… five… six.
+    </Speak>
+  </GetInput>
+</Response>''')
+
+# ====================== HANDLE ACTION ======================
 @app.route("/handle_action", methods=['GET'])
 def handle_action():
-    digits = request.values.get('Digits', '').strip()
-    speech = (request.values.get('SpeechResult', '') or request.values.get('Speech', '')).lower()
-    call_uuid = request.values.get('CallUUID')
-    caller = request.values.get('From', 'unknown')
-    pin = active_pins.get(call_uuid, {}).get("pin", "")
+    try:
+        digits = request.values.get('Digits', '').strip()
+        speech = (request.values.get('SpeechResult', '') or request.values.get('Speech', '')).lower()
+        call_uuid = request.values.get('CallUUID')
+        caller = request.values.get('From', 'unknown')
+        pin = active_pins.get(call_uuid, {}).get("pin", "")
 
-    if digits == "1" or "repeat" in speech:
-        logger.info("User chose to repeat results")
-        log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", "Results repeated")
-        xml = f'''<Response>
+        logger.info(f"User action input: Digits='{digits}' | Speech='{speech}' | PIN='{pin}'")
+
+        # Repeat results
+        if digits == "1" or any(w in speech for w in ["repeat", "yes"]):
+            log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", "Results repeated")
+            xml = f'''<Response>
   <Speak voice="Polly.Joanna" language="en-US">Repeating the results.</Speak>
   <Redirect method="GET">{BASE_URL}/confirm_pin</Redirect>
 </Response>'''
-        return plivo_response(xml)
-    else:
-        logger.info("User chose to end call")
+            return plivo_response(xml)
+
+        # End call
         log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", "Call ended")
-        if call_uuid in active_pins:
-            del active_pins[call_uuid]
         xml = f'''<Response>
   <Speak voice="Polly.Joanna" language="en-US">Thank you for calling. Goodbye.</Speak>
   <Hangup/>
 </Response>'''
         return plivo_response(xml)
 
+    except Exception as e:
+        logger.error(f"Error in /handle_action: {e}")
+        return plivo_response(f'''<Response>
+  <GetInput action="{BASE_URL}/handle_action" method="GET"
+            inputType="dtmf speech" numDigits="1" digitEndTimeout="10" speechEndTimeout="2"
+            hints="1,2,repeat,yes,no,goodbye,end">
+    <Speak voice="Polly.Joanna" language="en-US">
+      I'm sorry, I didn't get that. To hear your results again, say repeat or press 1. To end the call, say goodbye or press 2.
+    </Speak>
+  </GetInput>
+</Response>''')
+
+# ====================== HANGUP ======================
 @app.route("/hangup", methods=['POST'])
 def hangup():
     call_uuid = request.values.get('CallUUID')
     pin = active_pins.get(call_uuid, {}).get("pin", "")
     caller = request.values.get('From', 'unknown')
-    status = "PIN Accepted" if pin and len(pin) == 6 else "PIN Rejected"
+    status = "PIN Accepted" if pin and len(pin) >= 5 else "PIN Rejected"
     logger.info(f"Call hung up - PIN={pin} Status={status}")
     log_call_to_csv(caller, call_uuid, pin, status, "Caller hung up")
-    if call_uuid in active_pins:
-        del active_pins[call_uuid]
     return Response("<Response></Response>", mimetype="application/xml")
 
-
+# ====================== RUN APP ======================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     logger.info(f"App running on port {port}")
