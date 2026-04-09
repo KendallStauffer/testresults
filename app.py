@@ -13,6 +13,7 @@ app = Flask(__name__)
 # ====================== CONFIG ======================
 UPLOAD_PASSWORD = "ForUSDA!2026"
 CSV_PATH = "test_results_long.csv"
+LOG_PATH = "call_logs.csv"
 BACKUP_DIR = "backups"
 
 BASE_URL = "https://testresults-1aja.onrender.com"
@@ -47,6 +48,28 @@ def load_data():
 
 load_data()
 
+def init_call_log():
+    if not os.path.exists(LOG_PATH):
+        pd.DataFrame(columns=['Timestamp', 'CallerID', 'CallUUID', 'EnteredPIN', 'Success', 'Notes']).to_csv(LOG_PATH, index=False)
+        logger.info("✅ Created call_logs.csv")
+
+init_call_log()
+
+def log_call_to_csv(caller_id, call_uuid, entered_pin="", success=False, notes=""):
+    try:
+        new_row = pd.DataFrame([{
+            'Timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'CallerID': caller_id,
+            'CallUUID': call_uuid,
+            'EnteredPIN': entered_pin,
+            'Success': success,
+            'Notes': notes
+        }])
+        new_row.to_csv(LOG_PATH, mode='a', header=False, index=False)
+        logger.info(f"✅ Logged call: PIN={entered_pin}, Success={success}, Notes={notes}")
+    except Exception as e:
+        logger.error(f"❌ Failed to log call: {e}")
+
 def speak_pin_digits(pin: str):
     return " ".join(list(pin))
 
@@ -64,12 +87,14 @@ def log_call(event: str, extra: dict = None):
 @app.route("/status")
 def status():
     record_count = len(df) if not df.empty else 0
+    log_count = len(pd.read_csv(LOG_PATH)) if os.path.exists(LOG_PATH) else 0
     return render_template_string('''
         <h2>MMA Status</h2>
         <p>Records: {{ record_count }}</p>
+        <p>Call Logs: {{ log_count }}</p>
         <p>Last Upload: {{ last_upload_time }}</p>
         <p><a href="/upload">Upload CSV</a></p>
-    ''', record_count=record_count, last_upload_time=last_upload_time)
+    ''', record_count=record_count, log_count=log_count, last_upload_time=last_upload_time)
 
 @app.route("/upload", methods=['GET', 'POST'])
 def upload_csv():
@@ -134,6 +159,15 @@ def gather_pin():
     pin = re.sub(r'\D', '', raw)
 
     log_call("PIN_ATTEMPT", {"raw": raw, "cleaned_pin": pin, "length": len(pin)})
+
+    # Log every PIN attempt
+    log_call_to_csv(
+        caller_id=request.values.get('From', 'unknown'),
+        call_uuid=request.values.get('CallUUID', 'unknown'),
+        entered_pin=pin,
+        success=len(pin) == 6,
+        notes="PIN accepted" if len(pin) == 6 else "Invalid length"
+    )
 
     response = plivoxml.ResponseElement()
 
@@ -225,7 +259,15 @@ def confirm_pin():
         response.add(get_input)
         return plivo_response(response)
 
-    # === RESULTS READING - natural short pauses (multiple Speak) ===
+    # Log successful lookup
+    log_call_to_csv(
+        caller_id=request.values.get('From', 'unknown'),
+        call_uuid=call_uuid,
+        entered_pin=pin,
+        success=True,
+        notes="Results delivered"
+    )
+
     log_call("RESULTS_LOOKUP", {"pin": pin})
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
 
@@ -319,10 +361,27 @@ def handle_action():
         response.add(get_input)
 
     else:
+        # GOODBYE or hangup
         response.add(plivoxml.SpeakElement("Thank you for calling. Goodbye.", voice="Polly.Joanna", language="en-US"))
         response.add(plivoxml.HangupElement())
 
     return plivo_response(response)
+
+
+# New: Dedicated hangup route (Plivo calls this when caller hangs up without saying goodbye)
+@app.route("/hangup", methods=['POST'])
+def hangup():
+    log_call("CALL_HANGUP")
+    caller_id = request.values.get('From', 'unknown')
+    call_uuid = request.values.get('CallUUID', 'unknown')
+    log_call_to_csv(
+        caller_id=caller_id,
+        call_uuid=call_uuid,
+        entered_pin="",
+        success=False,
+        notes="Caller hung up"
+    )
+    return Response("<Response></Response>", mimetype="application/xml")
 
 
 if __name__ == "__main__":
