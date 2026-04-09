@@ -64,9 +64,9 @@ def log_call_to_csv(caller_id, call_uuid, entered_pin="", success=False, notes="
             'Notes': notes
         }])
         new_row.to_csv(LOG_PATH, mode='a', header=False, index=False)
-        logger.info(f"✅ Logged call: PIN={entered_pin}, Success={success}")
+        logger.info(f"✅ Logged: PIN={entered_pin} Success={success}")
     except Exception as e:
-        logger.error(f"❌ Failed to log call: {e}")
+        logger.error(f"❌ Log failed: {e}")
 
 def speak_pin_digits(pin: str):
     return " ".join(list(pin))
@@ -81,7 +81,7 @@ def log_call(event: str, extra: dict = None):
     details = " | ".join(f"{k}={v}" for k, v in extra.items()) if extra else ""
     logger.info(f"{event} | CallUUID={call_uuid} | From={from_number} {details}")
 
-# ====================== ADMIN PAGES ======================
+# ====================== ADMIN ======================
 @app.route("/status")
 def status():
     record_count = len(df) if not df.empty else 0
@@ -101,13 +101,13 @@ def view_logs():
     if not os.path.exists(LOG_PATH):
         return "<h2>No logs yet.</h2>"
     logs_df = pd.read_csv(LOG_PATH).sort_values('Timestamp', ascending=False).head(200)
-    html_table = logs_df.to_html(classes="table table-striped", index=False, escape=False)
+    html = logs_df.to_html(classes="table table-striped", index=False, escape=False)
     return render_template_string('''
-        <h2>Recent Call Logs (Newest First)</h2>
-        <p><a href="/status">← Back</a> | <a href="/download_logs">Download CSV</a></p>
-        {{ table|safe }}
+        <h2>Recent Call Logs (Newest 200)</h2>
+        <p><a href="/status">← Back to Status</a> | <a href="/download_logs">Download Full CSV</a></p>
+        {{ html|safe }}
         <style>table {border-collapse: collapse; width:100%;} th, td {border:1px solid #ddd; padding:8px;}</style>
-    ''', table=html_table)
+    ''', html=html)
 
 @app.route("/download_logs")
 def download_logs():
@@ -222,7 +222,7 @@ def confirm_pin():
 </Response>'''
         return plivo_response(xml)
 
-    # Build raw XML with proper SSML
+    # Build raw XML with SSML (this is what finally worked)
     xml = f'''<Response>
   <Speak voice="Polly.Joanna" language="en-US">Here are your milk test results.</Speak>'''
 
@@ -272,8 +272,6 @@ def handle_action():
     log_call("FINAL_ACTION", {"choice": speech or digits})
 
     if digits == "1" or "repeat" in speech:
-        # For repeat, we can redirect back to confirm_pin or duplicate the results XML
-        # Here we redirect to confirm_pin for simplicity (it will re-read results)
         xml = f'''<Response>
   <Speak voice="Polly.Joanna" language="en-US">Repeating the results.</Speak>
   <Redirect method="GET">{BASE_URL}/confirm_pin</Redirect>
