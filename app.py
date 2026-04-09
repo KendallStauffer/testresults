@@ -1,4 +1,4 @@
-from flask import Flask, request, Response, render_template_string
+from flask import Flask, request, Response, render_template_string, send_file
 import plivo
 from plivo import plivoxml
 import pandas as pd
@@ -66,7 +66,7 @@ def log_call_to_csv(caller_id, call_uuid, entered_pin="", success=False, notes="
             'Notes': notes
         }])
         new_row.to_csv(LOG_PATH, mode='a', header=False, index=False)
-        logger.info(f"✅ Logged call: PIN={entered_pin}, Success={success}, Notes={notes}")
+        logger.info(f"✅ Logged call: PIN={entered_pin}, Success={success}")
     except Exception as e:
         logger.error(f"❌ Failed to log call: {e}")
 
@@ -94,7 +94,36 @@ def status():
         <p>Call Logs: {{ log_count }}</p>
         <p>Last Upload: {{ last_upload_time }}</p>
         <p><a href="/upload">Upload CSV</a></p>
+        <p><a href="/logs">View Call Logs</a></p>
+        <p><a href="/download_logs">Download Call Logs (CSV)</a></p>
     ''', record_count=record_count, log_count=log_count, last_upload_time=last_upload_time)
+
+@app.route("/logs")
+def view_logs():
+    if not os.path.exists(LOG_PATH):
+        return "<h2>No logs yet.</h2>"
+    try:
+        logs_df = pd.read_csv(LOG_PATH)
+        logs_df = logs_df.sort_values('Timestamp', ascending=False).head(200)
+        html_table = logs_df.to_html(classes="table table-striped", index=False, escape=False)
+        return render_template_string('''
+            <h2>Recent Call Logs (Newest First - Last 200)</h2>
+            <p><a href="/status">← Back to Status</a> | <a href="/download_logs">Download Full CSV</a></p>
+            {{ table|safe }}
+            <style>
+                table { border-collapse: collapse; width: 100%; }
+                th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                th { background-color: #f2f2f2; }
+            </style>
+        ''', table=html_table)
+    except Exception as e:
+        return f"<h2>Error loading logs: {e}</h2>"
+
+@app.route("/download_logs")
+def download_logs():
+    if not os.path.exists(LOG_PATH):
+        return "No logs yet.", 404
+    return send_file(LOG_PATH, as_attachment=True, download_name="call_logs.csv")
 
 @app.route("/upload", methods=['GET', 'POST'])
 def upload_csv():
@@ -285,7 +314,7 @@ def confirm_pin():
 
     response.add(plivoxml.SpeakElement("Here are your milk test results.", voice="Polly.Joanna", language="en-US"))
 
-    # === SSML Results with pauses ===
+    # === SSML with Polly voice - Plivo recommended approach ===
     for _, row in results_df.iterrows():
         day = int(row.get('day', 1))
         fat = row.get('fat', 0)
@@ -293,32 +322,32 @@ def confirm_pin():
         scc = int(row.get('scc', 0))
         mun = int(row.get('mun', 0))
 
-        ssml_text = f"""
-        <speak>
-          <prosody rate="medium">
-            Sample from the {day}th. 
-            <break time="600ms"/>
-            Butterfat {fat} percent. 
-            <break time="600ms"/>
-            Protein {protein} percent. 
-            <break time="600ms"/>
-            Somatic cell count {scc:,}. 
-            <break time="600ms"/>
-          </prosody>
-        </speak>
-        """
+        ssml_content = f"""
+<prosody rate="medium">
+Sample from the {day}th.
+<break time="600ms"/>
+Butterfat {fat} percent.
+<break time="600ms"/>
+Protein {protein} percent.
+<break time="600ms"/>
+Somatic cell count {scc:,}.
+<break time="600ms"/>
+</prosody>
+"""
 
         if mun > 0:
-            ssml_text += f"""
-            <speak>
-              <prosody rate="medium">
-                Munn {mun}.
-                <break time="600ms"/>
-              </prosody>
-            </speak>
-            """
+            ssml_content += f"""
+<prosody rate="medium">
+Munn {mun}.
+<break time="600ms"/>
+</prosody>
+"""
 
-        speak = plivoxml.SpeakElement(ssml_text.strip(), voice="Polly.Joanna", language="en-US")
+        speak = plivoxml.SpeakElement(
+            ssml_content.strip(),
+            voice="Polly.Joanna",
+            language="en-US"
+        )
         response.add(speak)
 
     # Final menu
@@ -363,31 +392,31 @@ def handle_action():
                     scc = int(row.get('scc', 0))
                     mun = int(row.get('mun', 0))
 
-                    ssml_text = f"""
-                    <speak>
-                      <prosody rate="medium">
-                        Sample from the {day}th. 
-                        <break time="600ms"/>
-                        Butterfat {fat} percent. 
-                        <break time="600ms"/>
-                        Protein {protein} percent. 
-                        <break time="600ms"/>
-                        Somatic cell count {scc:,}. 
-                        <break time="600ms"/>
-                      </prosody>
-                    </speak>
-                    """
+                    ssml_content = f"""
+<prosody rate="medium">
+Sample from the {day}th.
+<break time="600ms"/>
+Butterfat {fat} percent.
+<break time="600ms"/>
+Protein {protein} percent.
+<break time="600ms"/>
+Somatic cell count {scc:,}.
+<break time="600ms"/>
+</prosody>
+"""
                     if mun > 0:
-                        ssml_text += f"""
-                        <speak>
-                          <prosody rate="medium">
-                            Munn {mun}.
-                            <break time="600ms"/>
-                          </prosody>
-                        </speak>
-                        """
+                        ssml_content += f"""
+<prosody rate="medium">
+Munn {mun}.
+<break time="600ms"/>
+</prosody>
+"""
 
-                    speak = plivoxml.SpeakElement(ssml_text.strip(), voice="Polly.Joanna", language="en-US")
+                    speak = plivoxml.SpeakElement(
+                        ssml_content.strip(),
+                        voice="Polly.Joanna",
+                        language="en-US"
+                    )
                     response.add(speak)
 
         # Menu after repeat
