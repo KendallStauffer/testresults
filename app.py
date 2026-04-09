@@ -10,9 +10,9 @@ app = Flask(__name__)
 
 # ====================== CONFIG ======================
 UPLOAD_PASSWORD = "ForUSDA!2026"
-CSV_PATH = "test_results_long.csv"
-LOG_PATH = "call_logs.csv"
-BACKUP_DIR = "backups"
+CSV_PATH = "/mnt/data/test_results_long.csv"
+LOG_PATH = "/mnt/data/call_logs.csv"
+BACKUP_DIR = "/mnt/data/backups"
 
 BASE_URL = "https://testresults-1aja.onrender.com"
 
@@ -37,8 +37,9 @@ def load_data():
             df = pd.read_csv(CSV_PATH)
             df['Pin_Number'] = df['Pin_Number'].astype(str).str.strip().str.zfill(6)
             last_upload_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            logger.info(f"✅ Loaded {len(df)} records")
+            logger.info(f"✅ Loaded {len(df)} records from CSV")
             return True
+        logger.info("No test_results_long.csv found yet")
         return False
     except Exception as e:
         logger.error(f"Failed to load CSV: {e}")
@@ -48,31 +49,34 @@ load_data()
 
 def init_call_log():
     if not os.path.exists(LOG_PATH):
-        pd.DataFrame(columns=['Timestamp', 'CallerID', 'CallUUID', 'EnteredPIN', 'Success', 'Notes']).to_csv(LOG_PATH, index=False)
-        logger.info("✅ Created call_logs.csv")
+        pd.DataFrame(columns=['Timestamp', 'CallerID', 'CallUUID', 'EnteredPIN', 'Status', 'Notes']).to_csv(LOG_PATH, index=False)
+        logger.info("✅ Created new call_logs.csv - will ONLY append from now on")
+    else:
+        logger.info("call_logs.csv already exists - will append only (no overwrite ever)")
 
 init_call_log()
 
-def log_call_to_csv(caller_id, call_uuid, entered_pin="", success=False, notes=""):
+def log_call_to_csv(caller_id, call_uuid, entered_pin="", status="PIN Rejected", notes=""):
     try:
+        file_exists = os.path.exists(LOG_PATH)
         new_row = pd.DataFrame([{
             'Timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             'CallerID': caller_id,
             'CallUUID': call_uuid,
             'EnteredPIN': entered_pin,
-            'Success': success,
+            'Status': status,
             'Notes': notes
         }])
-        new_row.to_csv(LOG_PATH, mode='a', header=False, index=False)
-        logger.info(f"✅ Logged: PIN={entered_pin} Success={success}")
+        new_row.to_csv(LOG_PATH, mode='a', header=not file_exists, index=False)
+        logger.info(f"✅ LOGGED: PIN={entered_pin} | Status={status} | Notes={notes}")
     except Exception as e:
-        logger.error(f"❌ Log failed: {e}")
+        logger.error(f"❌ Failed to append log: {e}")
 
 def speak_pin_digits(pin: str):
     return " ".join(list(pin))
 
-def plivo_response(xml_string: str):
-    return Response(xml_string, mimetype="application/xml")
+def plivo_response(xml: str):
+    return Response(xml, mimetype="application/xml")
 
 def log_call(event: str, extra: dict = None):
     if extra is None: extra = {}
@@ -90,24 +94,20 @@ def status():
         <h2>MMA Status</h2>
         <p>Records: {{ record_count }}</p>
         <p>Call Logs: {{ log_count }}</p>
-        <p>Last Upload: {{ last_upload_time }}</p>
-        <p><a href="/upload">Upload CSV</a></p>
-        <p><a href="/logs">View Call Logs</a></p>
-        <p><a href="/download_logs">Download Call Logs</a></p>
-    ''', record_count=record_count, log_count=log_count, last_upload_time=last_upload_time)
+        <p><a href="/upload">Upload CSV</a> | <a href="/logs">View Logs</a> | <a href="/download_logs">Download Logs</a></p>
+    ''', record_count=record_count, log_count=log_count)
 
 @app.route("/logs")
 def view_logs():
     if not os.path.exists(LOG_PATH):
         return "<h2>No logs yet.</h2>"
     logs_df = pd.read_csv(LOG_PATH).sort_values('Timestamp', ascending=False).head(200)
-    html = logs_df.to_html(classes="table table-striped", index=False, escape=False)
     return render_template_string('''
-        <h2>Recent Call Logs (Newest 200)</h2>
-        <p><a href="/status">← Back to Status</a> | <a href="/download_logs">Download Full CSV</a></p>
+        <h2>Recent Call Logs (200 newest)</h2>
+        <a href="/status">← Back</a> | <a href="/download_logs">Download Full CSV</a><br><br>
         {{ html|safe }}
-        <style>table {border-collapse: collapse; width:100%;} th, td {border:1px solid #ddd; padding:8px;}</style>
-    ''', html=html)
+        <style>table, th, td {border:1px solid black; padding:8px;}</style>
+    ''', html=logs_df.to_html(index=False))
 
 @app.route("/download_logs")
 def download_logs():
@@ -118,121 +118,125 @@ def download_logs():
 @app.route("/upload", methods=['GET', 'POST'])
 def upload_csv():
     if request.method == 'POST':
-        if request.form.get('password', '').strip() != UPLOAD_PASSWORD:
-            return "<h2>❌ Incorrect Password</h2><p><a href='/upload'>Try again</a></p>", 401
+        if request.form.get('password') != UPLOAD_PASSWORD:
+            return "<h2>Wrong password</h2><a href='/upload'>Try again</a>", 401
         file = request.files.get('file')
-        if not file or not file.filename.lower().endswith('.csv'):
-            return "<h2>❌ Upload valid CSV</h2>", 400
-        if os.path.exists(CSV_PATH):
-            shutil.copy(CSV_PATH, f"{BACKUP_DIR}/backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
-        file.save(CSV_PATH)
-        load_data()
-        return f"<h2>✅ Success! Loaded {len(df)} records.</h2><p><a href='/upload'>Upload again</a> | <a href='/status'>Status</a></p>"
+        if file and file.filename.endswith('.csv'):
+            if os.path.exists(CSV_PATH):
+                shutil.copy(CSV_PATH, f"{BACKUP_DIR}/backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+            file.save(CSV_PATH)
+            load_data()
+            return f"<h2>✅ Uploaded! {len(df)} records loaded.</h2><a href='/status'>Status</a>"
+        return "<h2>Please upload a valid CSV</h2>", 400
     return '''
-        <h2>MMA Upload</h2>
+        <h2>Upload test_results_long.csv</h2>
         <form method="post" enctype="multipart/form-data">
-            Password: <input type="password" name="password" required><br><br>
-            CSV: <input type="file" name="file" accept=".csv" required><br><br>
+            Password: <input type="password" name="password"><br><br>
+            File: <input type="file" name="file" accept=".csv"><br><br>
             <button type="submit">Upload</button>
         </form>
-        <p><a href="/status">Status</a></p>
+        <a href="/status">← Status</a>
     '''
 
-# ====================== VOICE ROUTES ======================
-
+# ====================== VOICE FLOW ======================
 @app.route("/voice", methods=['GET', 'POST'])
 def voice():
     log_call("INCOMING_CALL")
     xml = f'''<Response>
-  <GetInput action="{BASE_URL}/gather_pin" method="GET" inputType="dtmf speech" numDigits="6" digitEndTimeout="8" speechEndTimeout="2" language="en-US">
-    <Speak voice="Polly.Joanna" language="en-US">Thank you for calling the Milk Market Administrator Test Results Center. Please say or enter your 6 digit PIN.</Speak>
+  <GetInput action="{BASE_URL}/gather_pin" method="GET" inputType="dtmf speech" numDigits="6" 
+            digitEndTimeout="5" speechEndTimeout="3" speechModel="command_and_search"
+            hints="0,1,2,3,4,5,6,7,8,9,zero,oh">
+    <Speak voice="Polly.Joanna" language="en-US">
+      Thank you for calling the Milk Market Administrator Test Results Center. Please say or enter your 6 digit PIN.
+    </Speak>
   </GetInput>
   <Speak voice="Polly.Joanna" language="en-US">We didn't receive any input. Goodbye.</Speak>
 </Response>'''
     return plivo_response(xml)
 
+def pin_retry_prompt():
+    """Return XML for slow-digit retry prompt"""
+    return f'''<Response>
+  <GetInput action="{BASE_URL}/gather_pin" method="GET" inputType="dtmf speech" numDigits="6"
+            digitEndTimeout="5" speechEndTimeout="3" speechModel="phone_call"
+            hints="0,1,2,3,4,5,6,7,8,9,zero,oh">
+    <Speak voice="Polly.Joanna" language="en-US">
+      I'm sorry, I didn't get that.
+      Please say your six digit PIN one number at a time.
+      For example: one… two… three… four… five… six.
+    </Speak>
+  </GetInput>
+</Response>'''
 
 @app.route("/gather_pin", methods=['GET'])
 def gather_pin():
     digits = request.values.get('Digits', '').strip()
     speech = request.values.get('SpeechResult', '').strip() or request.values.get('Speech', '').strip()
     raw = digits if digits else speech
+
+    # Normalize zeros
+    raw = raw.lower().replace("zero", "0").replace("oh", "0").replace("o", "0")
     pin = re.sub(r'\D', '', raw)
 
-    log_call("PIN_ATTEMPT", {"raw": raw, "cleaned_pin": pin})
-    log_call_to_csv(request.values.get('From', 'unknown'), request.values.get('CallUUID', 'unknown'), pin, len(pin)==6)
+    confidence = float(request.values.get('SpeechConfidenceScore', 0))
+    logger.info(f"RAW SPEECH: '{raw}' | PIN: '{pin}' | Confidence: {confidence}")
 
-    if len(pin) != 6:
-        xml = f'''<Response>
-  <GetInput action="{BASE_URL}/gather_pin" method="GET" inputType="dtmf speech" numDigits="6" digitEndTimeout="8" speechEndTimeout="2" language="en-US">
-    <Speak voice="Polly.Joanna" language="en-US">Sorry, I didn't get 6 digits. Please say or enter your 6 digit PIN again.</Speak>
-  </GetInput>
-</Response>'''
-        return plivo_response(xml)
+    # Accept 5 digits as valid (special case)
+    pin_valid = len(pin) == 5 or (len(pin) == 6 and confidence >= 0.4)
 
-    active_pins[request.values.get('CallUUID', 'unknown')] = {"pin": pin}
+    if not pin_valid:
+        return plivo_response(pin_retry_prompt())
+
+    # Trim extra digits if >6
+    if len(pin) > 6:
+        pin = pin[:6]
+
+    caller = request.values.get('From', 'unknown')
+    call_uuid = request.values.get('CallUUID', 'unknown')
+
+    active_pins[call_uuid] = {"pin": pin}
+    log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", "Successful pin attempt - results read")
 
     spoken = speak_pin_digits(pin)
     xml = f'''<Response>
   <Speak voice="Polly.Joanna" language="en-US">You said {spoken}. Am I right?</Speak>
-  <GetInput action="{BASE_URL}/confirm_pin" method="GET" inputType="dtmf speech" numDigits="1" digitEndTimeout="10" speechEndTimeout="2" language="en-US">
-    <Speak voice="Polly.Joanna" language="en-US">Say yes or press 1 for yes. Say no or press 2 for no.</Speak>
+  <GetInput action="{BASE_URL}/confirm_pin" method="GET" inputType="dtmf speech" numDigits="1"
+            digitEndTimeout="10" speechEndTimeout="2"
+            hints="1,2,yes,no">
+    <Speak voice="Polly.Joanna" language="en-US">Say yes or press 1. Say no or press 2.</Speak>
   </GetInput>
 </Response>'''
     return plivo_response(xml)
 
-
 @app.route("/confirm_pin", methods=['GET'])
 def confirm_pin():
     digits = request.values.get('Digits', '').strip()
-    speech = request.values.get('SpeechResult', '').strip().lower() or request.values.get('Speech', '').strip().lower()
+    speech = (request.values.get('SpeechResult', '') or request.values.get('Speech', '')).lower()
     call_uuid = request.values.get('CallUUID')
 
-    is_yes = digits == "1" or any(word in speech for word in ["yes", "yeah", "correct", "right", "yep"])
-
+    is_yes = digits == "1" or any(w in speech for w in ["yes", "yeah", "yep", "correct", "right"])
     if not is_yes:
-        xml = f'''<Response>
-  <Speak voice="Polly.Joanna" language="en-US">Okay, let's try again.</Speak>
-  <GetInput action="{BASE_URL}/gather_pin" method="GET" inputType="dtmf speech" numDigits="6" digitEndTimeout="8" speechEndTimeout="2" language="en-US">
-    <Speak voice="Polly.Joanna" language="en-US">Please say or enter your 6 digit PIN.</Speak>
-  </GetInput>
-</Response>'''
-        return plivo_response(xml)
+        logger.info("User said NO to PIN confirmation")
+        return plivo_response(pin_retry_prompt())
 
     pin = active_pins.get(call_uuid, {}).get("pin")
     if not pin:
-        xml = f'''<Response>
-  <Speak voice="Polly.Joanna" language="en-US">Sorry, something went wrong. Please start over.</Speak>
-  <GetInput action="{BASE_URL}/gather_pin" method="GET" inputType="dtmf speech" numDigits="6" digitEndTimeout="8" speechEndTimeout="2" language="en-US">
-    <Speak voice="Polly.Joanna" language="en-US">Please say or enter your 6 digit PIN.</Speak>
-  </GetInput>
-</Response>'''
-        return plivo_response(xml)
+        logger.info("No pin found in active_pins")
+        return plivo_response(pin_retry_prompt())
 
-    log_call_to_csv(request.values.get('From', 'unknown'), call_uuid, pin, True, "Results delivered")
-
+    log_call_to_csv(request.values.get('From', 'unknown'), call_uuid, pin, "PIN Accepted", "Results read")
     results_df = df[df['Pin_Number'] == pin].sort_values('sequence_number')
-
     if results_df.empty:
-        xml = f'''<Response>
-  <Speak voice="Polly.Joanna" language="en-US">Sorry, no results were found for that PIN.</Speak>
-  <GetInput action="{BASE_URL}/gather_pin" method="GET" inputType="dtmf speech" numDigits="6" digitEndTimeout="8" speechEndTimeout="2" language="en-US">
-    <Speak voice="Polly.Joanna" language="en-US">Please say or enter your 6 digit PIN.</Speak>
-  </GetInput>
-</Response>'''
-        return plivo_response(xml)
+        return plivo_response(pin_retry_prompt())
 
-    # Build raw XML with SSML (this is what finally worked)
     xml = f'''<Response>
   <Speak voice="Polly.Joanna" language="en-US">Here are your milk test results.</Speak>'''
-
     for _, row in results_df.iterrows():
         day = int(row.get('day', 1))
-        fat = row.get('fat', 0)
-        protein = row.get('protein', 0)
+        fat = float(row.get('fat', 0))
+        protein = float(row.get('protein', 0))
         scc = int(row.get('scc', 0))
         mun = int(row.get('mun', 0))
-
         xml += f'''
   <Speak voice="Polly.Joanna" language="en-US">
     <prosody rate="medium">
@@ -246,50 +250,59 @@ Somatic cell count {scc:,}.
 <break time="600ms"/>
     </prosody>
   </Speak>'''
-
         if mun > 0:
             xml += f'''
   <Speak voice="Polly.Joanna" language="en-US">
-    <prosody rate="medium">
-Munn {mun}.
-<break time="600ms"/>
-    </prosody>
+    <prosody rate="medium">Munn {mun}.</prosody>
   </Speak>'''
 
     xml += f'''
-  <GetInput action="{BASE_URL}/handle_action" method="GET" inputType="dtmf speech" numDigits="1" digitEndTimeout="10" speechEndTimeout="2" language="en-US">
-    <Speak voice="Polly.Joanna" language="en-US">To hear these results again, say repeat or press 1. To end the call, say goodbye or press 2.</Speak>
+  <GetInput action="{BASE_URL}/handle_action" method="GET" inputType="dtmf speech" numDigits="1"
+            digitEndTimeout="10" speechEndTimeout="2">
+    <Speak voice="Polly.Joanna" language="en-US">
+      To hear these results again, say repeat or press 1. To end the call, say goodbye or press 2.
+    </Speak>
   </GetInput>
 </Response>'''
-
     return plivo_response(xml)
-
 
 @app.route("/handle_action", methods=['GET'])
 def handle_action():
     digits = request.values.get('Digits', '').strip()
-    speech = request.values.get('SpeechResult', '').strip().lower() or request.values.get('Speech', '').strip().lower()
-    log_call("FINAL_ACTION", {"choice": speech or digits})
+    speech = (request.values.get('SpeechResult', '') or request.values.get('Speech', '')).lower()
+    call_uuid = request.values.get('CallUUID')
+    caller = request.values.get('From', 'unknown')
+    pin = active_pins.get(call_uuid, {}).get("pin", "")
 
     if digits == "1" or "repeat" in speech:
+        logger.info("User chose to repeat results")
+        log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", "Results repeated")
         xml = f'''<Response>
   <Speak voice="Polly.Joanna" language="en-US">Repeating the results.</Speak>
   <Redirect method="GET">{BASE_URL}/confirm_pin</Redirect>
 </Response>'''
         return plivo_response(xml)
-
     else:
+        logger.info("User chose to end call")
+        log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", "Call ended")
+        if call_uuid in active_pins:
+            del active_pins[call_uuid]
         xml = f'''<Response>
   <Speak voice="Polly.Joanna" language="en-US">Thank you for calling. Goodbye.</Speak>
   <Hangup/>
 </Response>'''
         return plivo_response(xml)
 
-
 @app.route("/hangup", methods=['POST'])
 def hangup():
-    log_call("CALL_HANGUP")
-    log_call_to_csv(request.values.get('From', 'unknown'), request.values.get('CallUUID', 'unknown'), "", False, "Caller hung up")
+    call_uuid = request.values.get('CallUUID')
+    pin = active_pins.get(call_uuid, {}).get("pin", "")
+    caller = request.values.get('From', 'unknown')
+    status = "PIN Accepted" if pin and len(pin) == 6 else "PIN Rejected"
+    logger.info(f"Call hung up - PIN={pin} Status={status}")
+    log_call_to_csv(caller, call_uuid, pin, status, "Caller hung up")
+    if call_uuid in active_pins:
+        del active_pins[call_uuid]
     return Response("<Response></Response>", mimetype="application/xml")
 
 
