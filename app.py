@@ -142,7 +142,6 @@ def voice():
     ))
 
     response.add(get_input)
-
     response.add(plivoxml.SpeakElement("We didn't receive any input. Goodbye.", voice="Polly.Joanna", language="en-US"))
 
     return plivo_response(response)
@@ -154,13 +153,10 @@ def gather_pin():
     speech = request.values.get('SpeechResult', '').strip() or request.values.get('Speech', '').strip()
 
     raw = digits if digits else speech
-    logger.info(f"GATHER_PIN | raw = '{raw}'")
-
     pin = re.sub(r'\D', '', raw)
 
     log_call("PIN_ATTEMPT", {"raw": raw, "cleaned_pin": pin, "length": len(pin)})
 
-    # Log every PIN attempt
     log_call_to_csv(
         caller_id=request.values.get('From', 'unknown'),
         call_uuid=request.values.get('CallUUID', 'unknown'),
@@ -189,7 +185,6 @@ def gather_pin():
         return plivo_response(response)
 
     active_pins[request.values.get('CallUUID', 'unknown')] = {"pin": pin}
-    log_call("PIN_ACCEPTED", {"pin": pin})
 
     spoken = speak_pin_digits(pin)
     response.add(plivoxml.SpeakElement(f"You said {spoken}. Am I right?", voice="Polly.Joanna", language="en-US"))
@@ -259,7 +254,6 @@ def confirm_pin():
         response.add(get_input)
         return plivo_response(response)
 
-    # Log successful lookup
     log_call_to_csv(
         caller_id=request.values.get('From', 'unknown'),
         call_uuid=call_uuid,
@@ -291,14 +285,41 @@ def confirm_pin():
 
     response.add(plivoxml.SpeakElement("Here are your milk test results.", voice="Polly.Joanna", language="en-US"))
 
+    # === SSML Results with pauses ===
     for _, row in results_df.iterrows():
         day = int(row.get('day', 1))
-        response.add(plivoxml.SpeakElement(f"Sample from the {day}th.", voice="Polly.Joanna", language="en-US"))
-        response.add(plivoxml.SpeakElement(f"Butterfat {row.get('fat', 0)} percent.", voice="Polly.Joanna", language="en-US"))
-        response.add(plivoxml.SpeakElement(f"Protein {row.get('protein', 0)} percent.", voice="Polly.Joanna", language="en-US"))
-        response.add(plivoxml.SpeakElement(f"Somatic cell count {int(row.get('scc', 0)):,}.", voice="Polly.Joanna", language="en-US"))
-        if int(row.get('mun', 0)) > 0:
-            response.add(plivoxml.SpeakElement(f"Munn {int(row.get('mun', 0))}.", voice="Polly.Joanna", language="en-US"))
+        fat = row.get('fat', 0)
+        protein = row.get('protein', 0)
+        scc = int(row.get('scc', 0))
+        mun = int(row.get('mun', 0))
+
+        ssml_text = f"""
+        <speak>
+          <prosody rate="medium">
+            Sample from the {day}th. 
+            <break time="600ms"/>
+            Butterfat {fat} percent. 
+            <break time="600ms"/>
+            Protein {protein} percent. 
+            <break time="600ms"/>
+            Somatic cell count {scc:,}. 
+            <break time="600ms"/>
+          </prosody>
+        </speak>
+        """
+
+        if mun > 0:
+            ssml_text += f"""
+            <speak>
+              <prosody rate="medium">
+                Munn {mun}.
+                <break time="600ms"/>
+              </prosody>
+            </speak>
+            """
+
+        speak = plivoxml.SpeakElement(ssml_text.strip(), voice="Polly.Joanna", language="en-US")
+        response.add(speak)
 
     # Final menu
     get_input = plivoxml.GetInputElement(
@@ -337,12 +358,37 @@ def handle_action():
             if not results_df.empty:
                 for _, row in results_df.iterrows():
                     day = int(row.get('day', 1))
-                    response.add(plivoxml.SpeakElement(f"Sample from the {day}th.", voice="Polly.Joanna", language="en-US"))
-                    response.add(plivoxml.SpeakElement(f"Butterfat {row.get('fat', 0)} percent.", voice="Polly.Joanna", language="en-US"))
-                    response.add(plivoxml.SpeakElement(f"Protein {row.get('protein', 0)} percent.", voice="Polly.Joanna", language="en-US"))
-                    response.add(plivoxml.SpeakElement(f"Somatic cell count {int(row.get('scc', 0)):,}.", voice="Polly.Joanna", language="en-US"))
-                    if int(row.get('mun', 0)) > 0:
-                        response.add(plivoxml.SpeakElement(f"Munn {int(row.get('mun', 0))}.", voice="Polly.Joanna", language="en-US"))
+                    fat = row.get('fat', 0)
+                    protein = row.get('protein', 0)
+                    scc = int(row.get('scc', 0))
+                    mun = int(row.get('mun', 0))
+
+                    ssml_text = f"""
+                    <speak>
+                      <prosody rate="medium">
+                        Sample from the {day}th. 
+                        <break time="600ms"/>
+                        Butterfat {fat} percent. 
+                        <break time="600ms"/>
+                        Protein {protein} percent. 
+                        <break time="600ms"/>
+                        Somatic cell count {scc:,}. 
+                        <break time="600ms"/>
+                      </prosody>
+                    </speak>
+                    """
+                    if mun > 0:
+                        ssml_text += f"""
+                        <speak>
+                          <prosody rate="medium">
+                            Munn {mun}.
+                            <break time="600ms"/>
+                          </prosody>
+                        </speak>
+                        """
+
+                    speak = plivoxml.SpeakElement(ssml_text.strip(), voice="Polly.Joanna", language="en-US")
+                    response.add(speak)
 
         # Menu after repeat
         get_input = plivoxml.GetInputElement(
@@ -361,22 +407,18 @@ def handle_action():
         response.add(get_input)
 
     else:
-        # GOODBYE or hangup
         response.add(plivoxml.SpeakElement("Thank you for calling. Goodbye.", voice="Polly.Joanna", language="en-US"))
         response.add(plivoxml.HangupElement())
 
     return plivo_response(response)
 
 
-# New: Dedicated hangup route (Plivo calls this when caller hangs up without saying goodbye)
 @app.route("/hangup", methods=['POST'])
 def hangup():
     log_call("CALL_HANGUP")
-    caller_id = request.values.get('From', 'unknown')
-    call_uuid = request.values.get('CallUUID', 'unknown')
     log_call_to_csv(
-        caller_id=caller_id,
-        call_uuid=call_uuid,
+        caller_id=request.values.get('From', 'unknown'),
+        call_uuid=request.values.get('CallUUID', 'unknown'),
         entered_pin="",
         success=False,
         notes="Caller hung up"
