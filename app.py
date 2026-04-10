@@ -406,7 +406,7 @@ def view_logs():
         return "<h2>No logs yet.</h2>"
 
     try:
-        logs_df = pd.read_csv(LOG_PATH).sort_values("Timestamp", ascending=False).head(200)
+        logs_df = pd.read_csv(LOG_PATH, dtype=str).sort_values("Timestamp", ascending=False).head(200)
         html = logs_df.to_html(index=False)
     except Exception as e:
         html = f"<p>Could not read logs: {e}</p>"
