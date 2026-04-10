@@ -63,11 +63,14 @@ NO_WORDS = {"no", "nope", "wrong", "incorrect", "negative"}
 REPEAT_WORDS = {"repeat", "again", "replay"}
 GOODBYE_WORDS = {"goodbye", "bye", "end", "done", "stop"}
 
+
 def plivo_response(xml: str):
     return Response(xml, mimetype="text/xml")
 
+
 def normalize_columns(columns):
     return [str(c).strip().lower().replace(" ", "_") for c in columns]
+
 
 def ensure_required_columns(dataframe: pd.DataFrame) -> pd.DataFrame:
     if dataframe is None:
@@ -82,6 +85,7 @@ def ensure_required_columns(dataframe: pd.DataFrame) -> pd.DataFrame:
 
     return dataframe
 
+
 def safe_int(val, default=0):
     try:
         if pd.isna(val):
@@ -89,6 +93,7 @@ def safe_int(val, default=0):
         return int(float(val))
     except Exception:
         return default
+
 
 def safe_float(val, default=0.0):
     try:
@@ -98,6 +103,7 @@ def safe_float(val, default=0.0):
     except Exception:
         return default
 
+
 def ordinal(n):
     n = safe_int(n, 1)
     if 10 <= n % 100 <= 20:
@@ -106,8 +112,10 @@ def ordinal(n):
         suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
     return f"{n}{suffix}"
 
+
 def speak_pin_digits(pin: str):
     return " ".join(list(str(pin)))
+
 
 def extract_digits_from_text(text: str) -> str:
     if not text:
@@ -128,6 +136,7 @@ def extract_digits_from_text(text: str) -> str:
 
     return "".join(parsed)
 
+
 def interpret_yes_no(digits: str, speech: str):
     speech = (speech or "").lower().strip()
 
@@ -142,6 +151,7 @@ def interpret_yes_no(digits: str, speech: str):
         return False
 
     return None
+
 
 def interpret_action(digits: str, speech: str):
     speech = (speech or "").lower().strip()
@@ -158,19 +168,24 @@ def interpret_action(digits: str, speech: str):
 
     return None
 
+
 def get_call_uuid():
     return request.values.get("CallUUID", "unknown")
 
+
 def get_caller():
     return request.values.get("From", "unknown")
+
 
 def init_call_state(call_uuid):
     if call_uuid not in active_calls:
         active_calls[call_uuid] = {"pin": "", "results_reads": 0}
 
+
 def clear_call_state(call_uuid):
     if call_uuid in active_calls:
         del active_calls[call_uuid]
+
 
 def init_call_log():
     if not os.path.exists(LOG_PATH):
@@ -181,22 +196,26 @@ def init_call_log():
     else:
         logger.info("call_logs.csv already exists - append only mode")
 
+
 def log_call_to_csv(caller_id, call_uuid, entered_pin="", status="PIN Rejected", notes=""):
     try:
+        clean_pin = str(entered_pin).replace(".0", "").strip()
+
         new_row = pd.DataFrame([{
             "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "CallerID": caller_id,
             "CallUUID": call_uuid,
-            "EnteredPIN": entered_pin,
+            "EnteredPIN": clean_pin,
             "Status": status,
             "Notes": notes
         }])
 
         header_needed = not os.path.exists(LOG_PATH) or os.path.getsize(LOG_PATH) == 0
         new_row.to_csv(LOG_PATH, mode="a", header=header_needed, index=False)
-        logger.info(f"APPENDED TO CSV: PIN={entered_pin} | Status={status} | Notes={notes}")
+        logger.info(f"APPENDED TO CSV: PIN={clean_pin} | Status={status} | Notes={notes}")
     except Exception as e:
         logger.error(f"Failed to append to call_logs.csv: {e}")
+
 
 def pin_retry_xml(message=None):
     prompt = message or (
@@ -214,12 +233,14 @@ def pin_retry_xml(message=None):
   <Hangup/>
 </Response>"""
 
+
 def goodbye_xml():
     return """<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Speak voice="Polly.Joanna" language="en-US">Thank you for calling. Goodbye.</Speak>
   <Hangup/>
 </Response>"""
+
 
 def no_results_xml(pin):
     spoken = speak_pin_digits(pin)
@@ -238,6 +259,7 @@ def no_results_xml(pin):
   <Speak voice="Polly.Joanna" language="en-US">No new PIN was received. Goodbye.</Speak>
   <Hangup/>
 </Response>"""
+
 
 def load_data():
     global df
@@ -284,6 +306,7 @@ def load_data():
         logger.error(f"Failed to load CSV: {e}")
         df = ensure_required_columns(pd.DataFrame())
         return False
+
 
 def build_results_xml(pin, intro="Here are your milk test results."):
     global df
@@ -350,8 +373,10 @@ def build_results_xml(pin, intro="Here are your milk test results."):
 </Response>"""
     return xml
 
+
 load_data()
 init_call_log()
+
 
 @app.route("/status")
 def status():
@@ -374,6 +399,7 @@ def status():
         sample_pins=sample_pins
     )
 
+
 @app.route("/logs")
 def view_logs():
     if not os.path.exists(LOG_PATH):
@@ -392,11 +418,13 @@ def view_logs():
         <style>table, th, td {border:1px solid black; padding:8px;}</style>
     """, html=html)
 
+
 @app.route("/download_logs")
 def download_logs():
     if not os.path.exists(LOG_PATH):
         return "No logs yet.", 404
     return send_file(LOG_PATH, as_attachment=True, download_name="call_logs.csv")
+
 
 @app.route("/upload", methods=["GET", "POST"])
 def upload_csv():
@@ -433,6 +461,7 @@ def upload_csv():
         <a href="/status">← Status</a>
     """
 
+
 @app.route("/voice", methods=["GET", "POST"])
 def voice():
     call_uuid = get_call_uuid()
@@ -453,6 +482,7 @@ def voice():
   <Hangup/>
 </Response>"""
     return plivo_response(xml)
+
 
 @app.route("/gather_pin", methods=["GET", "POST"])
 def gather_pin():
@@ -491,15 +521,16 @@ def gather_pin():
     spoken = speak_pin_digits(pin)
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Speak voice="Polly.Joanna" language="en-US">You said {spoken}. Am I right?</Speak>
+  <Speak voice="Polly.Joanna" language="en-US">Am I right with {spoken}?</Speak>
   <GetInput action="{BASE_URL}/confirm_pin" method="POST" inputType="dtmf speech" numDigits="1"
             digitEndTimeout="10" speechEndTimeout="2" language="en-US">
     <Speak voice="Polly.Joanna" language="en-US">Say yes or press 1. Say no or press 2.</Speak>
   </GetInput>
-  <Speak voice="Polly.Joanna" language="en-US">No response received. Let's start over.</Speak>
-  <Redirect method="POST">{BASE_URL}/voice</Redirect>
+  <Speak voice="Polly.Joanna" language="en-US">No response received. Please say or enter your 6 digit PIN.</Speak>
+  <Redirect method="POST">{BASE_URL}/gather_pin</Redirect>
 </Response>"""
     return plivo_response(xml)
+
 
 @app.route("/confirm_pin", methods=["GET", "POST"])
 def confirm_pin():
@@ -515,23 +546,10 @@ def confirm_pin():
     decision = interpret_yes_no(digits, speech)
 
     if decision is False:
-        return plivo_response(f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Speak voice="Polly.Joanna" language="en-US">Okay, let's try again.</Speak>
-  <Redirect method="POST">{BASE_URL}/voice</Redirect>
-</Response>""")
+        return plivo_response(pin_retry_xml("Okay, let's try again. Please say or enter your 6 digit PIN."))
 
     if decision is None:
-        return plivo_response(f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Speak voice="Polly.Joanna" language="en-US">Sorry, I didn't catch that.</Speak>
-  <GetInput action="{BASE_URL}/confirm_pin" method="POST" inputType="dtmf speech" numDigits="1"
-            digitEndTimeout="10" speechEndTimeout="2" language="en-US">
-    <Speak voice="Polly.Joanna" language="en-US">Say yes or press 1. Say no or press 2.</Speak>
-  </GetInput>
-  <Speak voice="Polly.Joanna" language="en-US">No response received. Let's start over.</Speak>
-  <Redirect method="POST">{BASE_URL}/voice</Redirect>
-</Response>""")
+        return plivo_response(pin_retry_xml("Sorry, I didn't catch that. Please say or enter your 6 digit PIN."))
 
     pin = active_calls.get(call_uuid, {}).get("pin", "")
     if not pin:
@@ -543,6 +561,7 @@ def confirm_pin():
     active_calls[call_uuid]["results_reads"] += 1
 
     return plivo_response(build_results_xml(pin))
+
 
 @app.route("/handle_action", methods=["GET", "POST"])
 def handle_action():
@@ -566,6 +585,7 @@ def handle_action():
     clear_call_state(call_uuid)
     return plivo_response(goodbye_xml())
 
+
 @app.route("/hangup", methods=["GET", "POST"])
 def hangup():
     call_uuid = get_call_uuid()
@@ -578,6 +598,7 @@ def hangup():
     clear_call_state(call_uuid)
 
     return Response("<Response></Response>", mimetype="text/xml")
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
