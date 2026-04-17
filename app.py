@@ -342,7 +342,7 @@ def build_results_xml(pin, intro="Here are your milk test results."):
 
         xml += f"""
   <Speak voice="Polly.Joanna" language="en-US">
-    <prosody rate="x-slow">
+    <prosody rate="slow">
       Sample from the {ordinal(day)}.
       <break time="500ms"/>
       Butterfat {fat:.2f} percent.
@@ -357,8 +357,8 @@ def build_results_xml(pin, intro="Here are your milk test results."):
         if mun > 0:
             xml += f"""
   <Speak voice="Polly.Joanna" language="en-US">
-    <prosody rate="x-slow">Munn {mun}.</prosody>
-     <break time="900ms"/>
+    <prosody rate="slow">Munn {mun}.</prosody>
+     <break time="1200ms"/>
   </Speak>"""
 
     xml += f"""
