@@ -21,8 +21,7 @@ CSV_PATH = os.path.join(DATA_DIR, "test_results_long.csv")
 LOG_PATH = os.path.join(DATA_DIR, "call_logs.csv")
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")
 
-# One-time bootstrap source (old location in app folder)
-LEGACY_CSV_PATH = "test_results_long.csv"
+
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -43,19 +42,6 @@ def normalize_columns(dataframe: pd.DataFrame) -> pd.DataFrame:
     dataframe.columns = [c.strip().lower().replace(" ", "_") for c in dataframe.columns]
     return dataframe
 
-def bootstrap_csv_once():
-    """
-    One-time helper:
-    If the persistent CSV does not exist yet, but the old CSV exists in the app folder,
-    copy it into /mnt/data so the app starts with live data.
-    Remove this function call after first successful run.
-    """
-    try:
-        if (not os.path.exists(CSV_PATH)) and os.path.exists(LEGACY_CSV_PATH):
-            shutil.copy2(LEGACY_CSV_PATH, CSV_PATH)
-            logger.info(f"✅ Copied legacy CSV from {LEGACY_CSV_PATH} to {CSV_PATH}")
-    except Exception as e:
-        logger.error(f"Bootstrap copy failed: {e}")
 
 def load_data():
     global df
@@ -152,7 +138,7 @@ def pin_retry_xml():
 </Response>"""
 
 # ====================== STARTUP ======================
-bootstrap_csv_once()
+
 load_data()
 init_call_log()
 
