@@ -1,424 +1,187 @@
-from flask import Flask, request, Response, render_template_string, send_file
+from flask import Flask, request, Response, render_template_string, send_file, jsonify
 import pandas as pd
 import os
 import logging
 import shutil
 import re
 from datetime import datetime
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
+# ====================== CONFIG ======================
 UPLOAD_PASSWORD = "ForUSDA!2026"
-CSV_PATH = "/mnt/data/test_results_long.csv"
-LOG_PATH = "/mnt/data/call_logs.csv"
-BACKUP_DIR = "/mnt/data/backups"
+UPLOAD_API_KEY = os.environ.get("UPLOAD_API_KEY", "change-this-now")
+
 BASE_URL = "https://testresults-1aja.onrender.com"
 
+# Persistent disk paths
+DATA_DIR = "/mnt/data"
+CSV_PATH = os.path.join(DATA_DIR, "test_results_long.csv")
+LOG_PATH = os.path.join(DATA_DIR, "call_logs.csv")
+BACKUP_DIR = os.path.join(DATA_DIR, "backups")
+
+# One-time bootstrap source (old location in app folder)
+LEGACY_CSV_PATH = "test_results_long.csv"
+
+os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(BACKUP_DIR, exist_ok=True)
 
+# ====================== LOGGING ======================
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger(__name__)
 
-active_calls = {}
+active_pins = {}
 df = pd.DataFrame()
 
-REQUIRED_DEFAULTS = {
-    "pin_number": "",
-    "sequence_number": 1,
-    "day": 1,
-    "fat": 0,
-    "protein": 0,
-    "mun": 0,
-    "scc": 0,
-    "latest_test_date": "",
-}
-
-NUMBER_WORDS = {
-    "zero": "0",
-    "oh": "0",
-    "o": "0",
-    "one": "1",
-    "won": "1",
-    "two": "2",
-    "to": "2",
-    "too": "2",
-    "three": "3",
-    "tree": "3",
-    "four": "4",
-    "for": "4",
-    "five": "5",
-    "six": "6",
-    "seven": "7",
-    "eight": "8",
-    "ate": "8",
-    "nine": "9",
-}
-
-YES_WORDS = {"yes", "yeah", "yep", "correct", "right", "affirmative"}
-NO_WORDS = {"no", "nope", "wrong", "incorrect", "negative"}
-REPEAT_WORDS = {"repeat", "again", "replay"}
-GOODBYE_WORDS = {"goodbye", "bye", "end", "done", "stop"}
-
-
-def plivo_response(xml: str):
-    return Response(xml, mimetype="text/xml")
-
-
-def normalize_columns(columns):
-    return [str(c).strip().lower().replace(" ", "_") for c in columns]
-
-
-def ensure_required_columns(dataframe: pd.DataFrame) -> pd.DataFrame:
-    if dataframe is None:
-        dataframe = pd.DataFrame()
-
-    dataframe = dataframe.copy()
-    dataframe.columns = normalize_columns(dataframe.columns)
-
-    for col, default in REQUIRED_DEFAULTS.items():
-        if col not in dataframe.columns:
-            dataframe[col] = default
-
+# ====================== HELPERS ======================
+def normalize_columns(dataframe: pd.DataFrame) -> pd.DataFrame:
+    dataframe.columns = [c.strip().lower().replace(" ", "_") for c in dataframe.columns]
     return dataframe
 
-
-def safe_int(val, default=0):
+def bootstrap_csv_once():
+    """
+    One-time helper:
+    If the persistent CSV does not exist yet, but the old CSV exists in the app folder,
+    copy it into /mnt/data so the app starts with live data.
+    Remove this function call after first successful run.
+    """
     try:
-        if pd.isna(val):
-            return default
-        return int(float(val))
-    except Exception:
-        return default
-
-
-def safe_float(val, default=0.0):
-    try:
-        if pd.isna(val):
-            return default
-        return float(val)
-    except Exception:
-        return default
-
-
-def ordinal(n):
-    n = safe_int(n, 1)
-    if 10 <= n % 100 <= 20:
-        suffix = "th"
-    else:
-        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-    return f"{n}{suffix}"
-
-
-def speak_pin_digits(pin: str):
-    return " ".join(list(str(pin)))
-
-
-def extract_digits_from_text(text: str) -> str:
-    if not text:
-        return ""
-
-    text = text.lower().strip()
-    text = text.replace("-", " ").replace(",", " ").replace(".", " ")
-    text = re.sub(r"\s+", " ", text)
-
-    tokens = re.findall(r"[a-zA-Z0-9]+", text)
-    parsed = []
-
-    for token in tokens:
-        if token.isdigit():
-            parsed.extend(list(token))
-        elif token in NUMBER_WORDS:
-            parsed.append(NUMBER_WORDS[token])
-
-    return "".join(parsed)
-
-
-def interpret_yes_no(digits: str, speech: str):
-    speech = (speech or "").lower().strip()
-
-    if digits == "1":
-        return True
-    if digits == "2":
-        return False
-
-    if any(word in speech for word in YES_WORDS):
-        return True
-    if any(word in speech for word in NO_WORDS):
-        return False
-
-    return None
-
-
-def interpret_action(digits: str, speech: str):
-    speech = (speech or "").lower().strip()
-
-    if digits == "1":
-        return "repeat"
-    if digits == "2":
-        return "goodbye"
-
-    if any(word in speech for word in REPEAT_WORDS):
-        return "repeat"
-    if any(word in speech for word in GOODBYE_WORDS):
-        return "goodbye"
-
-    return None
-
-
-def get_call_uuid():
-    return request.values.get("CallUUID", "unknown")
-
-
-def get_caller():
-    return request.values.get("From", "unknown")
-
-
-def init_call_state(call_uuid):
-    if call_uuid not in active_calls:
-        active_calls[call_uuid] = {"pin": "", "results_reads": 0}
-
-
-def clear_call_state(call_uuid):
-    if call_uuid in active_calls:
-        del active_calls[call_uuid]
-
-
-def init_call_log():
-    if not os.path.exists(LOG_PATH):
-        pd.DataFrame(
-            columns=["Timestamp", "CallerID", "CallUUID", "EnteredPIN", "Status", "Notes"]
-        ).to_csv(LOG_PATH, index=False)
-        logger.info("Created new call_logs.csv")
-    else:
-        logger.info("call_logs.csv already exists - append only mode")
-
-
-def log_call_to_csv(caller_id, call_uuid, entered_pin="", status="PIN Rejected", notes=""):
-    try:
-        clean_pin = str(entered_pin).replace(".0", "").strip()
-
-        new_row = pd.DataFrame([{
-            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "CallerID": caller_id,
-            "CallUUID": call_uuid,
-            "EnteredPIN": clean_pin,
-            "Status": status,
-            "Notes": notes
-        }])
-
-        header_needed = not os.path.exists(LOG_PATH) or os.path.getsize(LOG_PATH) == 0
-        new_row.to_csv(LOG_PATH, mode="a", header=header_needed, index=False)
-        logger.info(f"APPENDED TO CSV: PIN={clean_pin} | Status={status} | Notes={notes}")
+        if (not os.path.exists(CSV_PATH)) and os.path.exists(LEGACY_CSV_PATH):
+            shutil.copy2(LEGACY_CSV_PATH, CSV_PATH)
+            logger.info(f"✅ Copied legacy CSV from {LEGACY_CSV_PATH} to {CSV_PATH}")
     except Exception as e:
-        logger.error(f"Failed to append to call_logs.csv: {e}")
-
-
-def pin_retry_xml(message=None):
-    prompt = message or (
-        "I'm sorry, I didn't get that. Please say your six digit PIN one number at a time. "
-        "For example: one, two, three, four, five, six."
-    )
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <GetInput action="{BASE_URL}/gather_pin" method="POST" inputType="dtmf speech" numDigits="6"
-            digitEndTimeout="5" speechEndTimeout="3" speechModel="command_and_search"
-            hints="zero,oh,o,one,two,three,four,five,six,seven,eight,nine" language="en-US">
-    <Speak voice="Polly.Joanna" language="en-US">{prompt}</Speak>
-  </GetInput>
-  <Speak voice="Polly.Joanna" language="en-US">We still did not receive a valid PIN. Goodbye.</Speak>
-  <Hangup/>
-</Response>"""
-
-
-def goodbye_xml():
-    return """<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Speak voice="Polly.Joanna" language="en-US">Thank you for calling. Goodbye.</Speak>
-  <Hangup/>
-</Response>"""
-
-
-def no_results_xml(pin):
-    spoken = speak_pin_digits(pin)
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Speak voice="Polly.Joanna" language="en-US">
-    We found no milk test results for PIN {spoken}.
-  </Speak>
-  <GetInput action="{BASE_URL}/gather_pin" method="POST" inputType="dtmf speech" numDigits="6"
-            digitEndTimeout="5" speechEndTimeout="3" speechModel="command_and_search"
-            hints="zero,oh,o,one,two,three,four,five,six,seven,eight,nine,goodbye,bye" language="en-US">
-    <Speak voice="Polly.Joanna" language="en-US">
-      Please try another six digit PIN now, or say goodbye to end the call.
-    </Speak>
-  </GetInput>
-  <Speak voice="Polly.Joanna" language="en-US">No new PIN was received. Goodbye.</Speak>
-  <Hangup/>
-</Response>"""
-
+        logger.error(f"Bootstrap copy failed: {e}")
 
 def load_data():
     global df
     try:
         if not os.path.exists(CSV_PATH):
-            logger.warning(f"CSV file not found at {CSV_PATH}")
-            df = ensure_required_columns(pd.DataFrame())
+            df = pd.DataFrame()
+            logger.info(f"No CSV found at {CSV_PATH}")
             return False
 
-        temp_df = pd.read_csv(CSV_PATH, dtype=str)
-        logger.info(f"CSV file loaded from {CSV_PATH}")
-        logger.info(f"Raw CSV columns before normalization: {list(temp_df.columns)}")
-        logger.info(f"Raw row count before normalization: {len(temp_df)}")
+        loaded = pd.read_csv(CSV_PATH)
+        loaded = normalize_columns(loaded)
 
-        temp_df = ensure_required_columns(temp_df)
-        logger.info(f"Normalized CSV columns: {list(temp_df.columns)}")
+        # Required columns
+        if "pin_number" not in loaded.columns:
+            raise ValueError("CSV missing Pin_Number / pin_number column")
 
-        temp_df["pin_number"] = (
-            temp_df["pin_number"]
-            .astype(str)
-            .str.strip()
-            .str.replace(".0", "", regex=False)
-            .str.replace(r"\D", "", regex=True)
-        )
+        if "sequence_number" not in loaded.columns:
+            loaded["sequence_number"] = 0
 
-        temp_df["sequence_number"] = pd.to_numeric(temp_df["sequence_number"], errors="coerce").fillna(1)
-        temp_df.loc[temp_df["sequence_number"] <= 0, "sequence_number"] = 1
+        # Make sure the IVR has the columns it expects
+        if "day" not in loaded.columns:
+            raise ValueError("CSV missing day column")
 
-        temp_df["day"] = pd.to_numeric(temp_df["day"], errors="coerce").fillna(1)
-        temp_df.loc[temp_df["day"] <= 0, "day"] = 1
+        for col in ["fat", "protein", "mun", "scc"]:
+            if col not in loaded.columns:
+                loaded[col] = 0
 
-        temp_df["fat"] = pd.to_numeric(temp_df["fat"], errors="coerce").fillna(0)
-        temp_df["protein"] = pd.to_numeric(temp_df["protein"], errors="coerce").fillna(0)
-        temp_df["mun"] = pd.to_numeric(temp_df["mun"], errors="coerce").fillna(0)
-        temp_df["scc"] = pd.to_numeric(temp_df["scc"], errors="coerce").fillna(0)
+        loaded["pin_number"] = loaded["pin_number"].astype(str).str.strip().str.zfill(6)
+        loaded["sequence_number"] = pd.to_numeric(loaded["sequence_number"], errors="coerce").fillna(0).astype(int)
+        loaded["day"] = pd.to_numeric(loaded["day"], errors="coerce").fillna(0).astype(int)
+        loaded["fat"] = pd.to_numeric(loaded["fat"], errors="coerce").fillna(0.0)
+        loaded["protein"] = pd.to_numeric(loaded["protein"], errors="coerce").fillna(0.0)
+        loaded["mun"] = pd.to_numeric(loaded["mun"], errors="coerce").fillna(0).astype(int)
+        loaded["scc"] = pd.to_numeric(loaded["scc"], errors="coerce").fillna(0).astype(int)
 
-        df = temp_df
-
-        logger.info(f"Loaded {len(df)} records from CSV")
-        logger.info(f"Sample loaded PINs: {df['pin_number'].dropna().astype(str).head(20).tolist()}")
+        df = loaded
+        logger.info(f"✅ Loaded {len(df)} records from {CSV_PATH}")
         return True
 
     except Exception as e:
         logger.error(f"Failed to load CSV: {e}")
-        df = ensure_required_columns(pd.DataFrame())
+        df = pd.DataFrame()
         return False
 
+def init_call_log():
+    if not os.path.exists(LOG_PATH):
+        pd.DataFrame(columns=[
+            "Timestamp", "CallerID", "CallUUID", "EnteredPIN", "Status", "Notes"
+        ]).to_csv(LOG_PATH, index=False)
+        logger.info("✅ Created call_logs.csv")
+    else:
+        logger.info("call_logs.csv already exists - append only")
 
-def build_results_xml(pin, intro="Here are your milk test results."):
-    global df
-    df = ensure_required_columns(df)
+def log_call_to_csv(caller_id, call_uuid, entered_pin="", status="PIN Rejected", notes=""):
+    try:
+        file_exists = os.path.exists(LOG_PATH)
+        new_row = pd.DataFrame([{
+            "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "CallerID": caller_id,
+            "CallUUID": call_uuid,
+            "EnteredPIN": entered_pin,
+            "Status": status,
+            "Notes": notes
+        }])
+        new_row.to_csv(LOG_PATH, mode="a", header=not file_exists, index=False)
+        logger.info(f"✅ APPENDED TO CSV: PIN={entered_pin} | Status={status} | Notes={notes}")
+    except Exception as e:
+        logger.error(f"❌ Failed to append to call_logs.csv: {e}")
 
-    if "pin_number" not in df.columns:
-        logger.error(f"pin_number missing. Current columns: {list(df.columns)}")
-        return no_results_xml(pin)
+def speak_pin_digits(pin: str):
+    return " ".join(list(pin))
 
-    pin = str(pin).strip()
-    available = df["pin_number"].astype(str).str.strip()
-    results_df = df[available == pin].copy()
+def plivo_response(xml: str):
+    return Response(xml, mimetype="application/xml")
 
-    logger.info(f"LOOKUP REQUESTED PIN: '{pin}'")
-    logger.info(f"LOOKUP MATCH COUNT: {len(results_df)}")
+def log_call(event: str, extra: dict = None):
+    if extra is None:
+        extra = {}
+    call_uuid = request.values.get("CallUUID", "unknown")
+    from_number = request.values.get("From", "unknown")
+    details = " | ".join(f"{k}={v}" for k, v in extra.items()) if extra else ""
+    logger.info(f"{event} | CallUUID={call_uuid} | From={from_number} {details}")
 
-    if results_df.empty:
-        logger.info(f"No results found for PIN {pin}")
-        return no_results_xml(pin)
-
-    results_df = results_df.sort_values(["sequence_number", "day"])
-
-    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Speak voice="Polly.Joanna" language="en-US">{intro}</Speak>"""
-
-    for _, row in results_df.iterrows():
-        day = safe_int(row.get("day", 1), 1)
-        fat = safe_float(row.get("fat", 0), 0.0)
-        protein = safe_float(row.get("protein", 0), 0.0)
-        scc = safe_int(row.get("scc", 0), 0)
-        mun = safe_int(row.get("mun", 0), 0)
-
-        xml += f"""
-  <Speak voice="Polly.Joanna" language="en-US">
-    <prosody rate="slow">
-      Sample from the {ordinal(day)}.
-      <break time="500ms"/>
-      Butterfat {fat:.2f} percent.
-      <break time="500ms"/>
-      Protein {protein:.2f} percent.
-      <break time="500ms"/>
-      Somatic cell count {scc:,}.
-      <break time="500ms"/>
-    </prosody>
-  </Speak>"""
-
-        if mun > 0:
-            xml += f"""
-  <Speak voice="Polly.Joanna" language="en-US">
-    <prosody rate="slow">Munn {mun}.</prosody>
-     <break time="1200ms"/>
-  </Speak>"""
-
-    xml += f"""
-  <GetInput action="{BASE_URL}/handle_action" method="POST" inputType="dtmf speech" numDigits="1"
-            digitEndTimeout="10" speechEndTimeout="2" language="en-US">
+def pin_retry_xml():
+    return f"""<Response>
+  <GetInput action="{BASE_URL}/gather_pin" method="GET" inputType="dtmf speech" numDigits="6"
+             digitEndTimeout="5" speechEndTimeout="3" speechModel="command_and_search"
+             hints="0,1,2,3,4,5,6,7,8,9,zero,oh,o" language="en-US">
     <Speak voice="Polly.Joanna" language="en-US">
-      To hear these results again, say repeat or press 1.
-      To end the call, say goodbye or press 2.
+      I'm sorry, I didn't get that. Please say your six digit PIN one number at a time.
+      For example: one, two, three, four, five, six.
     </Speak>
   </GetInput>
-  <Speak voice="Polly.Joanna" language="en-US">No response received. Goodbye.</Speak>
-  <Hangup/>
 </Response>"""
-    return xml
 
-
+# ====================== STARTUP ======================
+bootstrap_csv_once()
 load_data()
 init_call_log()
 
-
+# ====================== ADMIN ======================
 @app.route("/status")
 def status():
-    global df
-    df = ensure_required_columns(df)
     record_count = len(df) if not df.empty else 0
-    sample_pins = df["pin_number"].dropna().astype(str).head(20).tolist() if "pin_number" in df.columns else []
-
-    return render_template_string("""
-        <h2>MMA Status</h2>
-        <p>Records: {{ record_count }}</p>
-        <p>CSV Path: {{ csv_path }}</p>
-        <p>Columns: {{ columns }}</p>
-        <p>Sample PINs: {{ sample_pins }}</p>
-        <p><a href="/upload">Upload CSV</a> | <a href="/logs">View Logs</a> | <a href="/download_logs">Download Logs</a></p>
-    """,
-        record_count=record_count,
-        csv_path=CSV_PATH,
-        columns=list(df.columns),
-        sample_pins=sample_pins
-    )
-
+    log_count = len(pd.read_csv(LOG_PATH)) if os.path.exists(LOG_PATH) else 0
+    return jsonify({
+        "ok": True,
+        "records": record_count,
+        "call_logs": log_count,
+        "csv_path": CSV_PATH,
+        "csv_exists": os.path.exists(CSV_PATH),
+        "log_path": LOG_PATH,
+        "log_exists": os.path.exists(LOG_PATH)
+    })
 
 @app.route("/logs")
 def view_logs():
     if not os.path.exists(LOG_PATH):
         return "<h2>No logs yet.</h2>"
-
-    try:
-        logs_df = pd.read_csv(LOG_PATH, dtype=str).sort_values("Timestamp", ascending=False).head(200)
-        html = logs_df.to_html(index=False)
-    except Exception as e:
-        html = f"<p>Could not read logs: {e}</p>"
-
+    logs_df = pd.read_csv(LOG_PATH).sort_values("Timestamp", ascending=False).head(200)
     return render_template_string("""
         <h2>Recent Call Logs (200 newest)</h2>
         <a href="/status">← Back</a> | <a href="/download_logs">Download Full CSV</a><br><br>
         {{ html|safe }}
         <style>table, th, td {border:1px solid black; padding:8px;}</style>
-    """, html=html)
-
+    """, html=logs_df.to_html(index=False))
 
 @app.route("/download_logs")
 def download_logs():
@@ -426,31 +189,48 @@ def download_logs():
         return "No logs yet.", 404
     return send_file(LOG_PATH, as_attachment=True, download_name="call_logs.csv")
 
-
 @app.route("/upload", methods=["GET", "POST"])
-def upload_csv():
+def upload_csv_manual():
+    """
+    Manual browser upload for you.
+    """
     if request.method == "POST":
         if request.form.get("password") != UPLOAD_PASSWORD:
             return "<h2>Wrong password</h2><a href='/upload'>Try again</a>", 401
 
         file = request.files.get("file")
-        if not file or not file.filename.endswith(".csv"):
+        if not file or not file.filename.lower().endswith(".csv"):
             return "<h2>Please upload a valid CSV</h2>", 400
 
+        temp_name = secure_filename(file.filename)
+        temp_path = os.path.join(DATA_DIR, f"manual_{temp_name}")
+        file.save(temp_path)
+
         try:
+            test_df = pd.read_csv(temp_path)
+            test_df = normalize_columns(test_df)
+
+            if "pin_number" not in test_df.columns:
+                raise ValueError("CSV missing Pin_Number / pin_number column")
+            if "day" not in test_df.columns:
+                raise ValueError("CSV missing day column")
+
             if os.path.exists(CSV_PATH):
-                backup_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-                shutil.copy(CSV_PATH, os.path.join(BACKUP_DIR, backup_name))
+                backup_path = os.path.join(
+                    BACKUP_DIR,
+                    f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                )
+                shutil.copy2(CSV_PATH, backup_path)
 
-            file.save(CSV_PATH)
-            ok = load_data()
+            shutil.move(temp_path, CSV_PATH)
+            load_data()
 
-            if ok:
-                return f"<h2>Uploaded. {len(df)} records loaded.</h2><a href='/status'>Status</a>"
-            return "<h2>CSV uploaded, but loading failed. Check /status and logs.</h2><a href='/status'>Status</a>"
+            return f"<h2>✅ Uploaded! {len(df)} records loaded.</h2><a href='/status'>Status</a>"
+
         except Exception as e:
-            logger.error(f"Upload failed: {e}")
-            return f"<h2>Upload failed: {e}</h2><a href='/upload'>Try again</a>", 500
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            return f"<h2>Upload failed: {e}</h2><a href='/upload'>Try again</a>", 400
 
     return """
         <h2>Upload test_results_long.csv</h2>
@@ -462,145 +242,259 @@ def upload_csv():
         <a href="/status">← Status</a>
     """
 
+@app.route("/upload-csv", methods=["POST"])
+def upload_csv_api():
+    """
+    Automated upload endpoint for customer script.
+    """
+    try:
+        api_key = request.headers.get("X-API-Key", "")
+        if api_key != UPLOAD_API_KEY:
+            return jsonify({"ok": False, "error": "Unauthorized"}), 401
 
+        if "file" not in request.files:
+            return jsonify({"ok": False, "error": "No file part"}), 400
+
+        file = request.files["file"]
+        if file.filename == "":
+            return jsonify({"ok": False, "error": "No file selected"}), 400
+
+        if not file.filename.lower().endswith(".csv"):
+            return jsonify({"ok": False, "error": "Only CSV files are allowed"}), 400
+
+        temp_name = secure_filename(file.filename)
+        temp_path = os.path.join(DATA_DIR, f"api_{temp_name}")
+        file.save(temp_path)
+
+        test_df = pd.read_csv(temp_path)
+        test_df = normalize_columns(test_df)
+
+        if "pin_number" not in test_df.columns:
+            raise ValueError("CSV missing Pin_Number / pin_number column")
+        if "day" not in test_df.columns:
+            raise ValueError("CSV missing day column")
+
+        if os.path.exists(CSV_PATH):
+            backup_path = os.path.join(
+                BACKUP_DIR,
+                f"test_results_long_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            )
+            shutil.copy2(CSV_PATH, backup_path)
+
+        shutil.move(temp_path, CSV_PATH)
+        load_data()
+
+        return jsonify({
+            "ok": True,
+            "message": "CSV uploaded and reloaded successfully",
+            "rows_loaded": len(df),
+            "csv_path": CSV_PATH
+        })
+
+    except Exception as e:
+        logger.error(f"Upload failed: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+# ====================== VOICE FLOW ======================
 @app.route("/voice", methods=["GET", "POST"])
 def voice():
-    call_uuid = get_call_uuid()
-    init_call_state(call_uuid)
-    logger.info(f"INCOMING_CALL | CallUUID={call_uuid} | From={get_caller()}")
-
-    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <GetInput action="{BASE_URL}/gather_pin" method="POST" inputType="dtmf speech" numDigits="6"
-            digitEndTimeout="5" speechEndTimeout="3" speechModel="command_and_search"
-            hints="zero,oh,o,one,two,three,four,five,six,seven,eight,nine" language="en-US">
+    log_call("INCOMING_CALL")
+    xml = f"""<Response>
+  <GetInput action="{BASE_URL}/gather_pin" method="GET" inputType="dtmf speech" numDigits="6"
+             digitEndTimeout="5" speechEndTimeout="3" speechModel="command_and_search"
+             hints="0,1,2,3,4,5,6,7,8,9,zero,oh,o" language="en-US">
     <Speak voice="Polly.Joanna" language="en-US">
       Thank you for calling the Milk Market Administrator Test Results Center.
       Please say or enter your 6 digit PIN.
     </Speak>
   </GetInput>
-  <Speak voice="Polly.Joanna" language="en-US">We did not receive any input. Goodbye.</Speak>
-  <Hangup/>
+  <Speak voice="Polly.Joanna" language="en-US">We didn't receive any input. Goodbye.</Speak>
 </Response>"""
     return plivo_response(xml)
 
-
-@app.route("/gather_pin", methods=["GET", "POST"])
+@app.route("/gather_pin", methods=["GET"])
 def gather_pin():
-    digits = request.values.get("Digits", "").strip()
-    speech = request.values.get("SpeechResult", "").strip() or request.values.get("Speech", "").strip()
-    raw = digits if digits else speech
-    input_mode = "dtmf" if digits else "speech"
+    try:
+        digits = request.values.get("Digits", "").strip()
+        speech = (request.values.get("SpeechResult", "") or request.values.get("Speech", "")).strip()
+        raw = digits if digits else speech
 
-    caller = get_caller()
-    call_uuid = get_call_uuid()
-    init_call_state(call_uuid)
+        logger.info(f"RAW INPUT: '{raw}'")
 
-    logger.info(f"RAW INPUT: '{raw}'")
-    logger.info(f"INPUT MODE: {input_mode}")
-    logger.info(f"DIGITS FIELD: '{digits}'")
-    logger.info(f"SPEECH FIELD: '{speech}'")
+        pin = re.sub(r"\D", "", raw)
+        logger.info(f"PIN: '{pin}'")
 
-    lower_raw = (raw or "").lower().strip()
-    if lower_raw in {"goodbye", "bye", "end", "stop"}:
-        log_call_to_csv(caller, call_uuid, "", "PIN Accepted", "Caller said goodbye at PIN prompt")
-        clear_call_state(call_uuid)
-        return plivo_response(goodbye_xml())
+        caller = request.values.get("From", "unknown")
+        call_uuid = request.values.get("CallUUID", "unknown")
 
-    pin = extract_digits_from_text(raw)
-    logger.info(f"PARSED PIN: '{pin}'")
-    logger.info(f"PARSED PIN LENGTH: {len(pin)}")
+        # Special zero-heavy retry
+        if len(pin) > 6 and "0" in pin:
+            log_call_to_csv(caller, call_uuid, pin, "PIN Rejected", "Failed pin attempt - zero heavy")
+            xml = f"""<Response>
+  <GetInput action="{BASE_URL}/gather_pin" method="GET" inputType="dtmf speech" numDigits="6"
+             digitEndTimeout="5" speechEndTimeout="3" speechModel="command_and_search"
+             hints="0,1,2,3,4,5,6,7,8,9,zero,oh,o" language="en-US">
+    <Speak voice="Polly.Joanna" language="en-US">
+      Sorry, I didn't get exactly 6 digits. For some reason I am better at hearing the letter O than the word zero.
+      Please try again using O for zeros.
+    </Speak>
+  </GetInput>
+</Response>"""
+            return plivo_response(xml)
 
-    if len(pin) != 6:
-        log_call_to_csv(caller, call_uuid, pin, "PIN Rejected", f"Failed pin attempt via {input_mode}")
-        return plivo_response(pin_retry_xml())
+        # Invalid PIN
+        if len(pin) != 6:
+            log_call_to_csv(caller, call_uuid, pin, "PIN Rejected", "Failed pin attempt")
+            return plivo_response(pin_retry_xml())
 
-    active_calls[call_uuid]["pin"] = pin
-    logger.info(f"SUCCESSFUL PIN: {pin}")
-    log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", f"Successful pin attempt via {input_mode}")
+        # Successful PIN
+        active_pins[call_uuid] = {"pin": pin}
+        log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", "Successful pin attempt")
 
-    spoken = speak_pin_digits(pin)
-    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Speak voice="Polly.Joanna" language="en-US">Am I right with {spoken}?</Speak>
-  <GetInput action="{BASE_URL}/confirm_pin" method="POST" inputType="dtmf speech" numDigits="1"
-            digitEndTimeout="10" speechEndTimeout="2" language="en-US">
+        spoken = speak_pin_digits(pin)
+        xml = f"""<Response>
+  <Speak voice="Polly.Joanna" language="en-US">You said {spoken}. Am I right?</Speak>
+  <GetInput action="{BASE_URL}/confirm_pin" method="GET" inputType="dtmf speech" numDigits="1"
+             digitEndTimeout="10" speechEndTimeout="2" hints="1,2,yes,no" language="en-US">
     <Speak voice="Polly.Joanna" language="en-US">Say yes or press 1. Say no or press 2.</Speak>
   </GetInput>
-  <Speak voice="Polly.Joanna" language="en-US">No response received. Please say or enter your 6 digit PIN.</Speak>
-  <Redirect method="POST">{BASE_URL}/gather_pin</Redirect>
 </Response>"""
-    return plivo_response(xml)
+        return plivo_response(xml)
 
+    except Exception as e:
+        logger.error(f"Error in /gather_pin: {e}")
+        return plivo_response(pin_retry_xml())
 
-@app.route("/confirm_pin", methods=["GET", "POST"])
+@app.route("/confirm_pin", methods=["GET"])
 def confirm_pin():
-    digits = request.values.get("Digits", "").strip()
-    speech = (request.values.get("SpeechResult", "") or request.values.get("Speech", "")).lower()
+    try:
+        digits = request.values.get("Digits", "").strip()
+        speech = (request.values.get("SpeechResult", "") or request.values.get("Speech", "")).lower()
+        call_uuid = request.values.get("CallUUID")
+        caller = request.values.get("From", "unknown")
 
-    call_uuid = get_call_uuid()
-    caller = get_caller()
-    init_call_state(call_uuid)
+        is_yes = digits == "1" or any(w in speech for w in ["yes", "yeah", "yep", "correct", "right"])
 
-    logger.info(f"CONFIRM INPUT | digits='{digits}' | speech='{speech}'")
+        if not is_yes:
+            logger.info("User said NO to PIN confirmation")
+            return plivo_response(pin_retry_xml())
 
-    decision = interpret_yes_no(digits, speech)
+        pin = active_pins.get(call_uuid, {}).get("pin")
+        if not pin:
+            logger.info("No pin found in active_pins")
+            return plivo_response(pin_retry_xml())
 
-    if decision is False:
-        return plivo_response(pin_retry_xml("Okay, let's try again. Please say or enter your 6 digit PIN."))
+        log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", "Results read")
 
-    if decision is None:
-        return plivo_response(pin_retry_xml("Sorry, I didn't catch that. Please say or enter your 6 digit PIN."))
+        results_df = df[df["pin_number"] == pin].sort_values("sequence_number")
+        if results_df.empty:
+            logger.info(f"No results found for PIN {pin}")
+            return plivo_response(pin_retry_xml())
 
-    pin = active_calls.get(call_uuid, {}).get("pin", "")
-    if not pin:
-        logger.error("PIN missing from call state during confirm_pin")
-        return plivo_response(pin_retry_xml("We lost your PIN entry. Please enter your six digit PIN again."))
+        xml = """<Response>
+  <Speak voice="Polly.Joanna" language="en-US">Here are your milk test results.</Speak>"""
 
-    logger.info(f"CONFIRMED PIN FOR LOOKUP: '{pin}'")
-    log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", "Results read")
-    active_calls[call_uuid]["results_reads"] += 1
+        for _, row in results_df.iterrows():
+            day = int(row.get("day", 0))
+            fat = float(row.get("fat", 0))
+            protein = float(row.get("protein", 0))
+            scc = int(row.get("scc", 0))
+            mun = int(row.get("mun", 0))
 
-    return plivo_response(build_results_xml(pin))
+            xml += f"""
+  <Speak voice="Polly.Joanna" language="en-US">
+    <prosody rate="medium">
+Sample from the {day}th.
+<break time="600ms"/>
+Butterfat {fat} percent.
+<break time="600ms"/>
+Protein {protein} percent.
+<break time="600ms"/>
+Somatic cell count {scc:,}.
+<break time="600ms"/>
+    </prosody>
+  </Speak>"""
 
+            if mun > 0:
+                xml += f"""
+  <Speak voice="Polly.Joanna" language="en-US">
+    <prosody rate="medium">Munn {mun}.</prosody>
+  </Speak>"""
 
-@app.route("/handle_action", methods=["GET", "POST"])
+        xml += f"""
+  <GetInput action="{BASE_URL}/handle_action" method="GET" inputType="dtmf speech" numDigits="1"
+             digitEndTimeout="10" speechEndTimeout="2"
+             hints="1,2,repeat,goodbye,end" language="en-US">
+    <Speak voice="Polly.Joanna" language="en-US">
+      To hear these results again, say repeat or press 1.
+      To end the call, say goodbye or press 2.
+    </Speak>
+  </GetInput>
+</Response>"""
+        return plivo_response(xml)
+
+    except Exception as e:
+        logger.error(f"Error in /confirm_pin: {e}")
+        return plivo_response(pin_retry_xml())
+
+@app.route("/handle_action", methods=["GET"])
 def handle_action():
-    digits = request.values.get("Digits", "").strip()
-    speech = (request.values.get("SpeechResult", "") or request.values.get("Speech", "")).lower()
+    try:
+        digits = request.values.get("Digits", "").strip()
+        speech = (request.values.get("SpeechResult", "") or request.values.get("Speech", "")).lower()
+        call_uuid = request.values.get("CallUUID")
+        caller = request.values.get("From", "unknown")
+        pin = active_pins.get(call_uuid, {}).get("pin", "")
 
-    call_uuid = get_call_uuid()
-    caller = get_caller()
-    init_call_state(call_uuid)
+        logger.info(f"User action input: Digits='{digits}' | Speech='{speech}' | PIN='{pin}'")
 
-    pin = active_calls.get(call_uuid, {}).get("pin", "")
-    action = interpret_action(digits, speech)
+        if digits == "1" or "repeat" in speech:
+            log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", "Results repeated")
+            xml = f"""<Response>
+  <Speak voice="Polly.Joanna" language="en-US">Repeating the results.</Speak>
+  <Redirect method="GET">{BASE_URL}/confirm_pin</Redirect>
+</Response>"""
+            return plivo_response(xml)
 
-    logger.info(f"HANDLE ACTION | digits='{digits}' | speech='{speech}' | resolved_action='{action}' | pin='{pin}'")
+        log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", "Call ended")
+        if call_uuid in active_pins:
+            del active_pins[call_uuid]
 
-    if action == "repeat":
-        log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", "Results repeated")
-        return plivo_response(build_results_xml(pin, intro="Repeating your milk test results."))
+        xml = """<Response>
+  <Speak voice="Polly.Joanna" language="en-US">Thank you for calling. Goodbye.</Speak>
+  <Hangup/>
+</Response>"""
+        return plivo_response(xml)
 
-    log_call_to_csv(caller, call_uuid, pin, "PIN Accepted", "Call ended")
-    clear_call_state(call_uuid)
-    return plivo_response(goodbye_xml())
+    except Exception as e:
+        logger.error(f"Error in /handle_action: {e}")
+        xml = f"""<Response>
+  <GetInput action="{BASE_URL}/handle_action" method="GET"
+            inputType="dtmf speech" numDigits="1" digitEndTimeout="10" speechEndTimeout="2"
+            hints="1,2,repeat,goodbye,end" language="en-US">
+    <Speak voice="Polly.Joanna" language="en-US">
+      I'm sorry, I didn't get that. To hear your results again, say repeat or press 1.
+      To end the call, say goodbye or press 2.
+    </Speak>
+  </GetInput>
+</Response>"""
+        return plivo_response(xml)
 
-
-@app.route("/hangup", methods=["GET", "POST"])
+@app.route("/hangup", methods=["POST"])
 def hangup():
-    call_uuid = get_call_uuid()
-    caller = get_caller()
-    pin = active_calls.get(call_uuid, {}).get("pin", "")
-
+    call_uuid = request.values.get("CallUUID")
+    pin = active_pins.get(call_uuid, {}).get("pin", "")
+    caller = request.values.get("From", "unknown")
     status = "PIN Accepted" if pin and len(pin) == 6 else "PIN Rejected"
-    logger.info(f"HANGUP | CallUUID={call_uuid} | Caller={caller} | PIN='{pin}' | Status={status}")
+    logger.info(f"Call hung up - PIN={pin} Status={status}")
     log_call_to_csv(caller, call_uuid, pin, status, "Caller hung up")
-    clear_call_state(call_uuid)
 
-    return Response("<Response></Response>", mimetype="text/xml")
+    if call_uuid in active_pins:
+        del active_pins[call_uuid]
 
+    return Response("<Response></Response>", mimetype="application/xml")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    logger.info(f"App running on port {port}")
     app.run(host="0.0.0.0", port=port)
