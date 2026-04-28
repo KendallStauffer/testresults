@@ -26,10 +26,10 @@ def voice():
     action="{BASE_URL}/gather_pin"
     method="POST"
     input="dtmf speech"
-    timeout="5"
+    timeout="10"
     speechTimeout="3"
     language="en-US"
-    hints="zero oh o one two three four five six seven eight nine 0 1 2 3 4 5 6 7 8 9"
+    hints="zero, oh, o, one, two, three, four, five, six, seven, eight, nine, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9"
     transcriptionEngine="Telnyx">
     <Say voice="{TTS_VOICE}">Please say or enter your 6 digit pin.</Say>
   </Gather>
