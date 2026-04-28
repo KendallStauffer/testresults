@@ -26,7 +26,6 @@ def voice():
     action="{BASE_URL}/gather_pin"
     method="POST"
     input="dtmf speech"
-    numDigits="6"
     timeout="5"
     speechTimeout="3"
     language="en-US"
