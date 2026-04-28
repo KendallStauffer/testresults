@@ -103,7 +103,7 @@ def pin_gather_xml(prompt: str):
           method="POST"
           input="dtmf speech"
           numDigits="6"
-          timeout="5"
+          timeout="2"
           speechTimeout="3"
           language="{TTS_LANGUAGE}"
           transcriptionEngine="{ASR_ENGINE}"
