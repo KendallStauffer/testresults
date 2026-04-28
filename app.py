@@ -38,8 +38,8 @@ def start_call():
         method="POST"
         input="speech"
         numDigits="6"
-        timeout="5"
-        speechTimeout="auto"
+        timeout="8"
+        speechTimeout="3"
         hints="0 1 2 3 4 5 6 7 8 9 zero one two three four five six seven eight nine oh"
         language="en-US"
         transcriptionEngine="Deepgram"
@@ -94,7 +94,7 @@ def gather_handler():
             print(f"❌ Invalid (got '{code}')")
             texml = '''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="Telnyx.NaturalHD.astra" language="en-US">Sorry, I couldn't understand the 6 digit code.</Say>
+    <Say voice="Telnyx.Natural.abbie" language="en-US">Sorry, I couldn't understand the 6 digit code.</Say>
     <Redirect>/telnyx/voice</Redirect>
 </Response>'''
 
