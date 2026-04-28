@@ -45,13 +45,15 @@ def start_call():
         transcriptionEngine="Deepgram"
         profanityFilter="false">
         
-        <Say voice="female" language="en-US">
+        <Say voice="Telnyx.NaturalHD.astra" language="en-US">
             Please say your 6 digit code, speaking each digit clearly and separately. 
             For example: one two three four five six.
         </Say>
     </Gather>
 
-    <Say>Sorry, I didn't catch your 6 digit code. Let's try again.</Say>
+    <Say voice="Telnyx.NaturalHD.astra" language="en-US">
+        Sorry, I didn't catch your 6 digit code. Let's try again.
+    </Say>
     <Redirect>/telnyx/voice</Redirect>
 </Response>'''
 
@@ -61,7 +63,7 @@ def start_call():
         print("🚨 ERROR in /telnyx/voice:")
         print(traceback.format_exc())
         return Response('''<?xml version="1.0" encoding="UTF-8"?>
-<Response><Say>An application error occurred.</Say><Hangup/></Response>''', 
+<Response><Say voice="Telnyx.NaturalHD.astra">An application error occurred.</Say><Hangup/></Response>''', 
                         mimetype='text/xml', status=500)
 
 
@@ -85,14 +87,14 @@ def gather_handler():
             print(f"✅ SUCCESS! Code: {code}")
             texml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="female">Thank you. Your code {code} was received.</Say>
+    <Say voice="Telnyx.NaturalHD.astra" language="en-US">Thank you. Your code {code} was received.</Say>
     <Hangup/>
 </Response>'''
         else:
             print(f"❌ Invalid (got '{code}')")
             texml = '''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Sorry, I couldn't understand the 6 digit code.</Say>
+    <Say voice="Telnyx.NaturalHD.astra" language="en-US">Sorry, I couldn't understand the 6 digit code.</Say>
     <Redirect>/telnyx/voice</Redirect>
 </Response>'''
 
@@ -102,7 +104,7 @@ def gather_handler():
         print("🚨 ERROR in gather-handler:")
         print(traceback.format_exc())
         return Response('''<?xml version="1.0" encoding="UTF-8"?>
-<Response><Say>An application error occurred.</Say><Hangup/></Response>''', 
+<Response><Say voice="Telnyx.NaturalHD.astra">An application error occurred.</Say><Hangup/></Response>''', 
                         mimetype='text/xml', status=500)
 
 
