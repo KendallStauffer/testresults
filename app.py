@@ -24,7 +24,7 @@ def speech_to_digits(text):
     return cleaned
 
 
-# ====================== YOUR ORIGINAL PATH ======================
+# ====================== YOUR PATH: /telnyx/voice ======================
 @app.route('/telnyx/voice', methods=['GET', 'POST'])
 def start_call():
     try:
@@ -34,7 +34,7 @@ def start_call():
         texml = '''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Gather 
-        action="/telnyx/voice/gather-handler"   <!-- relative path, works with your setup -->
+        action="/telnyx/voice/gather-handler"
         method="POST"
         input="speech"
         numDigits="6"
