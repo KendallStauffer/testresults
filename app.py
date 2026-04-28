@@ -128,7 +128,7 @@ load_data()
 def voice():
     xml = f'''<Response>
   <Gather action="{BASE_URL}/gather_pin" method="POST" input="dtmf speech" numDigits="6"
-          timeout="2" speechTimeout="3" language="{TTS_LANGUAGE}"
+          timeout="4" speechTimeout="3" language="{TTS_LANGUAGE}"
           hints="zero,oh,o,0,one,two,three,four,five,six,seven,eight,nine"
           transcriptionEngine="Deepgram">
     {say("Please say or enter your 6 digit pin.")}
@@ -141,7 +141,7 @@ def voice():
 def pin_retry_xml():
     return f'''<Response>
   <Gather action="{BASE_URL}/gather_pin" method="POST" input="dtmf speech" numDigits="6"
-          timeout="2" speechTimeout="3" language="{TTS_LANGUAGE}"
+          timeout="4" speechTimeout="3" language="{TTS_LANGUAGE}"
           hints="zero,oh,o,0,one,two,three,four,five,six,seven,eight,nine"
           transcriptionEngine="Deepgram">
     {say("I'm sorry, I didn't get that. Please say your six digit PIN one number at a time.")}
@@ -166,7 +166,7 @@ def gather_pin():
     xml = f'''<Response>
   {say(f"You said {spoken}. Am I right?")}
   <Gather action="{BASE_URL}/confirm_pin" method="POST" input="dtmf speech" numDigits="1"
-          timeout="2" speechTimeout="3" language="{TTS_LANGUAGE}"
+          timeout="4" speechTimeout="3" language="{TTS_LANGUAGE}"
           hints="yes,yeah,yep,correct,right,one,no,wrong,two"
           transcriptionEngine="Deepgram">
     {say("Say yes or press 1. Say no or press 2.")}
@@ -229,7 +229,7 @@ def confirm_pin():
 
     xml += f'''
   <Gather action="{BASE_URL}/handle_action" method="POST" input="dtmf speech" numDigits="1"
-          timeout="2" speechTimeout="3" language="{TTS_LANGUAGE}"
+          timeout="4" speechTimeout="3" language="{TTS_LANGUAGE}"
           hints="repeat,goodbye,again,one,two"
           transcriptionEngine="Deepgram">
     {say("To hear these results again, say repeat or press 1. To end the call, say goodbye or press 2.")}
