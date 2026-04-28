@@ -4,7 +4,7 @@ import traceback
 
 app = Flask(__name__)
 
-# ====================== WORD TO DIGIT CONVERTER (fixed) ======================
+# ====================== WORD TO DIGIT CONVERTER ======================
 def speech_to_digits(text):
     if not text:
         return ""
@@ -24,18 +24,17 @@ def speech_to_digits(text):
     return cleaned
 
 
-# ====================== START CALL ======================
-@app.route('/start', methods=['GET', 'POST'])
+# ====================== YOUR ORIGINAL PATH ======================
+@app.route('/telnyx/voice', methods=['GET', 'POST'])
 def start_call():
     try:
-        print("=== /start HIT by Telnyx ===")
+        print("=== /telnyx/voice HIT by Telnyx ===")
         print("Method:", request.method)
-        print("Headers:", dict(request.headers))
         
         texml = '''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Gather 
-        action="/gather-handler"
+        action="/telnyx/voice/gather-handler"   <!-- relative path, works with your setup -->
         method="POST"
         input="speech"
         numDigits="6"
@@ -53,14 +52,13 @@ def start_call():
     </Gather>
 
     <Say>Sorry, I didn't catch your 6 digit code. Let's try again.</Say>
-    <Redirect>/start</Redirect>
+    <Redirect>/telnyx/voice</Redirect>
 </Response>'''
 
         return Response(texml, mimetype='text/xml', status=200)
     
     except Exception as e:
-        print("🚨 ERROR in /start route:")
-        print(str(e))
+        print("🚨 ERROR in /telnyx/voice:")
         print(traceback.format_exc())
         return Response('''<?xml version="1.0" encoding="UTF-8"?>
 <Response><Say>An application error occurred.</Say><Hangup/></Response>''', 
@@ -68,53 +66,48 @@ def start_call():
 
 
 # ====================== GATHER HANDLER ======================
-@app.route('/gather-handler', methods=['POST'])
+@app.route('/telnyx/voice/gather-handler', methods=['POST'])
 def gather_handler():
     try:
-        print("=== /gather-handler HIT ===")
+        print("=== /telnyx/voice/gather-handler HIT ===")
         print("Full form data:", dict(request.form))
         
         speech_result = request.form.get('SpeechResult', '').strip()
         digits_raw = request.form.get('Digits', '').strip()
         
         print(f"Raw SpeechResult: {speech_result}")
-        print(f"Raw Digits: {digits_raw}")
         
-        # FIXED 6-digit logic
         code = speech_to_digits(speech_result)
         if not code and digits_raw and len(digits_raw) == 6:
             code = digits_raw
         
         if len(code) == 6:
-            print(f"✅ SUCCESS! 6-digit code received: {code}")
+            print(f"✅ SUCCESS! Code: {code}")
             texml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say voice="female">Thank you. Your code {code} was received.</Say>
     <Hangup/>
 </Response>'''
         else:
-            print(f"❌ Invalid code (got '{code}' from '{speech_result}')")
+            print(f"❌ Invalid (got '{code}')")
             texml = '''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say>Sorry, I couldn't understand the 6 digit code.</Say>
-    <Redirect>/start</Redirect>
+    <Redirect>/telnyx/voice</Redirect>
 </Response>'''
 
         return Response(texml, mimetype='text/xml', status=200)
     
     except Exception as e:
-        print("🚨 ERROR in /gather-handler route:")
-        print(str(e))
+        print("🚨 ERROR in gather-handler:")
         print(traceback.format_exc())
         return Response('''<?xml version="1.0" encoding="UTF-8"?>
 <Response><Say>An application error occurred.</Say><Hangup/></Response>''', 
                         mimetype='text/xml', status=500)
 
 
-# ====================== HEALTH ======================
 @app.route('/health', methods=['GET'])
 def health():
-    print("Health check hit")
     return {"status": "ok"}, 200
 
 
