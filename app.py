@@ -30,7 +30,7 @@ def voice():
     speechTimeout="3"
     language="en-US"
     hints="zero oh o one two three four five six seven eight nine"
-    transcriptionEngine="Deepgram">
+    transcriptionEngine="Telnyx">
     <Say voice="{TTS_VOICE}">Please say or enter your 6 digit pin.</Say>
   </Gather>
   <Say voice="{TTS_VOICE}">We didn't receive any input. Goodbye.</Say>
