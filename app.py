@@ -14,7 +14,7 @@ LOG_PATH = os.environ.get("LOG_PATH", "/mnt/data/call_logs.csv")
 BACKUP_DIR = os.environ.get("BACKUP_DIR", "/mnt/data/backups")
 BASE_URL = os.environ.get("BASE_URL", "https://testresults-1aja.onrender.com").rstrip("/")
 
-# BEST TELNYX VOICE - used everywhere
+# BEST TELNYX VOICE + DEEPGRAM (you can change via Render env var if you want)
 TTS_VOICE = os.environ.get("TTS_VOICE", "Telnyx.NaturalHD.astra")
 TTS_LANGUAGE = os.environ.get("TTS_LANGUAGE", "en-US")
 
@@ -264,7 +264,8 @@ def voice():
     xml = f'''<Response>
   <Gather action="{BASE_URL}/gather_pin" method="POST" input="dtmf speech" numDigits="6"
           timeout="12" speechTimeout="3" language="{TTS_LANGUAGE}"
-          hints="zero,oh,o,0,one,two,three,four,five,six,seven,eight,nine">
+          hints="zero,oh,o,0,one,two,three,four,five,six,seven,eight,nine"
+          transcriptionEngine="Deepgram">
     {say("Please say or enter your 6 digit pin.")}
   </Gather>
   {say("We didn't receive any input. Goodbye.")}
@@ -276,7 +277,8 @@ def pin_retry_xml():
     return f'''<Response>
   <Gather action="{BASE_URL}/gather_pin" method="POST" input="dtmf speech" numDigits="6"
           timeout="12" speechTimeout="3" language="{TTS_LANGUAGE}"
-          hints="zero,oh,o,0,one,two,three,four,five,six,seven,eight,nine">
+          hints="zero,oh,o,0,one,two,three,four,five,six,seven,eight,nine"
+          transcriptionEngine="Deepgram">
     {say("I'm sorry, I didn't get that. Please say your six digit PIN one number at a time. For example: one, two, three, four, five, six.")}
   </Gather>
 </Response>'''
@@ -298,7 +300,8 @@ def gather_pin():
         xml = f'''<Response>
   <Gather action="{BASE_URL}/gather_pin" method="POST" input="dtmf speech" numDigits="6"
           timeout="12" speechTimeout="3" language="{TTS_LANGUAGE}"
-          hints="zero,oh,o,0,one,two,three,four,five,six,seven,eight,nine">
+          hints="zero,oh,o,0,one,two,three,four,five,six,seven,eight,nine"
+          transcriptionEngine="Deepgram">
     {say("Sorry, I didn't get exactly 6 digits. I may hear the letter O better than the word zero. Please try again using O for zeros.")}
   </Gather>
 </Response>'''
@@ -315,7 +318,8 @@ def gather_pin():
   {say(f"You said {spoken}. Am I right?")}
   <Gather action="{BASE_URL}/confirm_pin" method="POST" input="dtmf speech" numDigits="1"
           timeout="10" speechTimeout="2" language="{TTS_LANGUAGE}"
-          hints="yes,no,correct,right,wrong,one,two">
+          hints="yes,no,correct,right,wrong,one,two"
+          transcriptionEngine="Deepgram">
     {say("Say yes or press 1. Say no or press 2.")}
   </Gather>
 </Response>'''
@@ -379,7 +383,8 @@ def confirm_pin():
     xml += f'''
   <Gather action="{BASE_URL}/handle_action" method="POST" input="dtmf speech" numDigits="1"
           timeout="10" speechTimeout="2" language="{TTS_LANGUAGE}"
-          hints="repeat,goodbye,again,one,two">
+          hints="repeat,goodbye,again,one,two"
+          transcriptionEngine="Deepgram">
     {say("To hear these results again, say repeat or press 1. To end the call, say goodbye or press 2.")}
   </Gather>
   {say("We did not receive any input. Goodbye.")}
