@@ -14,7 +14,7 @@ LOG_PATH = os.environ.get("LOG_PATH", "/mnt/data/call_logs.csv")
 BACKUP_DIR = os.environ.get("BACKUP_DIR", "/mnt/data/backups")
 BASE_URL = os.environ.get("BASE_URL", "https://testresults-1aja.onrender.com").rstrip("/")
 
-# ←←← FORCE BEST TELNYX VOICE HERE (SSML will now work) ←←←
+# BEST TELNYX VOICE + DEEPGRAM
 TTS_VOICE = os.environ.get("TTS_VOICE", "Telnyx.NaturalHD.astra")
 TTS_LANGUAGE = os.environ.get("TTS_LANGUAGE", "en-US")
 
@@ -313,6 +313,38 @@ def gather_pin():
 
     active_pins[call_id] = {"pin": pin}
     log_call_to_csv(caller, call_id, pin, "PIN Accepted", "Successful pin attempt")
+    spoken = speak_pin_digits(pin)
+    xml = f'''<Response>
+  {say(f"You said {spoken}. Am I right?")}
+  <Gather action="{BASE_URL}/confirm_pin" method="POST" input="dtmf speech" numDigits="1"
+          timeout="10" speechTimeout="2" language="{TTS_LANGUAGE}"
+          hints="yes,no,correct,right,wrong,one,two"
+          transcriptionEngine="Deepgram">
+    {say("Say yes or press 1. Say no or press 2.")}
+  </Gather>
+</Response>'''
+    return xml_response(xml)
+
+
+@app.route("/confirm_pin", methods=["GET", "POST"])
+def confirm_pin():
+    digits = get_digits()
+    speech = get_speech().lower()
+    call_id = get_call_id()
+    caller = get_from_number()
+    is_yes = digits == "1" or any(w in speech for w in ["yes", "yeah", "yep", "correct", "right"])
+
+    if not is_yes:
+        retry_inner = pin_retry_xml().replace("<Response>", "").replace("</Response>", "")
+        xml = f'''<Response>
+  {say("Okay, let's try again.")}
+  {retry_inner}
+</Response>'''
+        return xml_response(xml)
+
+    pin = active_pins.get(call_id, {}).get("pin")
+    if not pin:
+        return xml_response(pin_retry_xml())
 
     results_df = df[df["pin_number"] == pin].sort_values("sequence_number")
     if results_df.empty:
@@ -350,7 +382,7 @@ def gather_pin():
 
     xml += f'''
   <Gather action="{BASE_URL}/handle_action" method="POST" input="dtmf speech" numDigits="1"
-          timeout="8" speechTimeout="2" language="{TTS_LANGUAGE}"   <!-- reduced delay -->
+          timeout="10" speechTimeout="2" language="{TTS_LANGUAGE}"
           hints="repeat,goodbye,again,one,two"
           transcriptionEngine="Deepgram">
     {say("To hear these results again, say repeat or press 1. To end the call, say goodbye or press 2.")}
@@ -373,7 +405,7 @@ def handle_action():
         log_call_to_csv(caller, call_id, pin, "PIN Accepted", "Results repeated")
         xml = f'''<Response>
   {say("Repeating the results.")}
-  <Redirect method="POST">{BASE_URL}/gather_pin</Redirect>
+  <Redirect method="POST">{BASE_URL}/confirm_pin</Redirect>
 </Response>'''
         return xml_response(xml)
 
