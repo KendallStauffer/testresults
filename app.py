@@ -549,9 +549,13 @@ class VoiceFlow:
 
                 await self.say(line)
 
-                # Pause between facts so results don't run together and so
-                # a "stop" utterance can be processed between lines.
-                await asyncio.sleep(pause_seconds)
+                # Queue actual silence so the caller hears the gap. Also sleep
+                # locally so a "stop" utterance can be processed between lines.
+                pause_fn = getattr(self, "pause", None)
+                if pause_fn:
+                    await pause_fn(pause_seconds)
+                else:
+                    await asyncio.sleep(pause_seconds)
 
             if self.stop_results_requested:
                 log_call_to_csv(self.caller_id, self.call_uuid, pin, "PIN Accepted", "Results stopped")
@@ -673,6 +677,42 @@ def clear_twilio_audio(ws, stream_sid: Optional[str]) -> None:
         logger.error(f"Failed to clear Twilio audio: {exc}")
 
 
+async def send_twilio_silence(ws=None, stream_sid: Optional[str] = None, seconds: float = 0.0) -> None:
+    """
+    Queue actual silence audio into Twilio playback.
+
+    asyncio.sleep() pauses server-side logic, but Twilio may still have already
+    buffered prior media. Sending mu-law silence makes the caller hear the gap
+    between result facts.
+    """
+    if ws is None or not stream_sid or seconds <= 0:
+        return
+
+    try:
+        sample_count = int(8000 * seconds)
+        # 0xFF is silence in mu-law.
+        audio = b"\xff" * sample_count
+        payload = base64.b64encode(audio).decode("ascii")
+
+        ws.send(json.dumps({
+            "event": "media",
+            "streamSid": stream_sid,
+            "media": {"payload": payload},
+        }))
+
+        mark_name = f"silence-{int(time.time() * 1000)}"
+        ws.send(json.dumps({
+            "event": "mark",
+            "streamSid": stream_sid,
+            "mark": {"name": mark_name},
+        }))
+
+        logger.info(f"Sent Twilio silence: {seconds:.2f}s, mark={mark_name}")
+
+    except Exception as exc:
+        logger.error(f"Failed to send Twilio silence: {exc}")
+
+
 async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None) -> None:
     """
     Send Deepgram TTS back to Twilio as one raw mu-law media message.
@@ -762,7 +802,12 @@ async def media_stream_async(ws) -> None:
         await say_to_call(text, ws=ws, stream_sid=stream_sid)
         listen_resume_at = time.monotonic() + (resume_delay_ms / 1000.0)
 
+    async def pause(seconds: float) -> None:
+        await send_twilio_silence(ws=ws, stream_sid=stream_sid, seconds=seconds)
+        await asyncio.sleep(seconds)
+
     flow = VoiceFlow(say=say)
+    flow.pause = pause
     flow.step = Step.ASK_PIN
 
     # Keep Deepgram's websocket reader responsive. Long actions like reading
@@ -825,6 +870,18 @@ async def media_stream_async(ws) -> None:
                     continue
 
                 now = time.monotonic()
+
+                # Result-read stop/end must override the TTS ignore guard so
+                # callers can interrupt result playback.
+                if flow.is_reading_results and is_stop_request(transcript):
+                    logger.info(
+                        f"STOP REQUEST DURING RESULTS: {transcript} "
+                        f"is_final={is_final} speech_final={speech_final}"
+                    )
+                    flow.stop_results_requested = True
+                    clear_twilio_audio(ws, stream_sid)
+                    continue
+
                 if now < listen_resume_at:
                     logger.info(
                         f"DEEPGRAM IGNORED DURING TTS: {transcript} "
@@ -835,14 +892,6 @@ async def media_stream_async(ws) -> None:
                 logger.info(f"DEEPGRAM: {transcript} is_final={is_final} speech_final={speech_final}")
 
                 nonlocal action_task
-
-                # Result-read barge-in must be handled immediately, even while
-                # a result-reading task is running.
-                if flow.is_reading_results and is_stop_request(transcript):
-                    logger.info(f"STOP REQUEST DURING RESULTS: {transcript}")
-                    flow.stop_results_requested = True
-                    clear_twilio_audio(ws, stream_sid)
-                    continue
 
                 # Confirmation/action barge-in.
                 if flow.step == Step.CONFIRM_PIN and extract_yes_no(transcript) is not None:
