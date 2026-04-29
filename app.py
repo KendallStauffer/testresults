@@ -18,7 +18,7 @@ BASE_URL=https://testresults-1aja.onrender.com
 
 Recommended Render start command
 --------------------------------
-gunicorn --threads 100 --timeout 0 app:app
+python app.py
 
 Requirements
 ------------
@@ -56,6 +56,10 @@ import websockets
 from dotenv import load_dotenv
 from flask import Flask, Response, request
 from flask_sock import Sock
+try:
+    from simple_websocket.errors import ConnectionClosed
+except Exception:  # pragma: no cover
+    ConnectionClosed = Exception
 
 load_dotenv()
 
@@ -328,9 +332,22 @@ async def media_stream_async(ws) -> None:
 
         try:
             while True:
-                raw_msg = ws.receive()
-                if raw_msg is None:
+                # Flask-Sock/simple-websocket is synchronous. Calling ws.receive()
+                # directly inside async code blocks the event loop and can cause
+                # Gunicorn to kill the worker. Run it in a thread and use a short
+                # timeout so Deepgram receive tasks keep moving.
+                try:
+                    raw_msg = await asyncio.to_thread(ws.receive, 1)
+                except ConnectionClosed:
+                    print("TWILIO: websocket closed", flush=True)
                     break
+                except Exception as exc:
+                    print(f"TWILIO: websocket receive error: {exc}", flush=True)
+                    break
+
+                # None means timeout/no message yet. Keep polling.
+                if raw_msg is None:
+                    continue
 
                 try:
                     event = json.loads(raw_msg)
@@ -389,8 +406,10 @@ def main() -> None:
         asyncio.run(run_cli())
         return
 
-    # Local dev only. Render should run through gunicorn.
+    # Render injects PORT automatically. This is the "port connect" built into
+    # the app so the Render start command can stay: python app.py
     port = int(os.getenv("PORT", "8000"))
+    print(f"Starting Flask app on 0.0.0.0:{port}", flush=True)
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
 
 
