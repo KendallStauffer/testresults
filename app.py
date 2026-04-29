@@ -11,7 +11,8 @@ import json
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+import urllib.parse
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Optional
@@ -33,6 +34,17 @@ UPLOAD_PASSWORD = "ForUSDA!2026"
 UPLOAD_API_KEY = os.environ.get("UPLOAD_API_KEY", "change-this-now")
 
 BASE_URL = os.environ.get("BASE_URL", "https://testresults-1aja.onrender.com").rstrip("/")
+
+# Optional Supabase call statistics. If these are not set, the app still works
+# and continues to write the existing call_logs.csv file.
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_KEY = (
+    os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    or os.environ.get("SUPABASE_KEY")
+    or os.environ.get("SUPABASE_ANON_KEY")
+    or ""
+)
+SUPABASE_CALL_TABLE = os.environ.get("SUPABASE_CALL_TABLE", "milk_call_stats")
 
 # Persistent disk paths
 DATA_DIR = "/mnt/data"
@@ -140,6 +152,150 @@ def get_ws_url(path: str = "/media") -> str:
     return BASE_URL.replace("https://", "wss://").replace("http://", "ws://") + path
 
 
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def supabase_enabled() -> bool:
+    return bool(SUPABASE_URL and SUPABASE_KEY)
+
+
+def supabase_headers(extra: dict | None = None) -> dict:
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+    }
+    if extra:
+        headers.update(extra)
+    return headers
+
+
+def supabase_request(method: str, path: str, payload=None, extra_headers: dict | None = None):
+    """
+    Small REST helper so we do not need another Python dependency.
+    Supabase exposes database tables through /rest/v1 and requires apikey +
+    Authorization headers.
+    """
+    if not supabase_enabled():
+        return None
+
+    url = f"{SUPABASE_URL}/rest/v1/{path.lstrip('/')}"
+    body = None if payload is None else json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method=method,
+        headers=supabase_headers(extra_headers),
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            if not raw:
+                return None
+            return json.loads(raw)
+    except Exception as exc:
+        logger.warning(f"Supabase request failed: method={method} path={path} error={exc}")
+        return None
+
+
+def stats_upsert_call(call_sid: str, **fields) -> None:
+    if not call_sid or call_sid == "unknown":
+        return
+
+    now = utc_now_iso()
+    row = {
+        "call_sid": call_sid,
+        "updated_at": now,
+        **fields,
+    }
+    if "started_at" not in row:
+        row["started_at"] = now
+
+    path = f"{SUPABASE_CALL_TABLE}?on_conflict=call_sid"
+    supabase_request(
+        "POST",
+        path,
+        payload=row,
+        extra_headers={"Prefer": "resolution=merge-duplicates,return=minimal"},
+    )
+
+
+def stats_update_call(call_sid: str, **fields) -> None:
+    if not call_sid or call_sid == "unknown":
+        return
+
+    fields["updated_at"] = utc_now_iso()
+    encoded = urllib.parse.quote(str(call_sid), safe="")
+    path = f"{SUPABASE_CALL_TABLE}?call_sid=eq.{encoded}"
+    supabase_request(
+        "PATCH",
+        path,
+        payload=fields,
+        extra_headers={"Prefer": "return=minimal"},
+    )
+
+
+def stats_finish_call(call_sid: str, status: str = "completed", **fields) -> None:
+    if not call_sid or call_sid == "unknown":
+        return
+
+    ended_at = datetime.now(timezone.utc)
+    started_at = active_calls.get(call_sid, {}).get("started_at_dt")
+    duration_seconds = None
+    if started_at:
+        duration_seconds = max(0, int((ended_at - started_at).total_seconds()))
+
+    update = {
+        "ended_at": ended_at.isoformat(),
+        "status": status,
+        **fields,
+    }
+    if duration_seconds is not None:
+        update["duration_seconds"] = duration_seconds
+
+    stats_update_call(call_sid, **update)
+
+
+def parse_report_dates():
+    start_raw = request.args.get("start", "").strip()
+    end_raw = request.args.get("end", "").strip()
+
+    if not start_raw or not end_raw:
+        return None, None, "Use ?start=YYYY-MM-DD&end=YYYY-MM-DD"
+
+    try:
+        start_date = datetime.strptime(start_raw, "%Y-%m-%d").date()
+        end_date = datetime.strptime(end_raw, "%Y-%m-%d").date()
+    except ValueError:
+        return None, None, "Dates must be YYYY-MM-DD"
+
+    if end_date < start_date:
+        return None, None, "End date must be on or after start date"
+
+    start_dt = datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc)
+    end_exclusive = datetime.combine(end_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+    return start_dt, end_exclusive, ""
+
+
+def fetch_supabase_call_report(start_dt: datetime, end_exclusive: datetime):
+    start_q = urllib.parse.quote(start_dt.isoformat(), safe="")
+    end_q = urllib.parse.quote(end_exclusive.isoformat(), safe="")
+    select_cols = (
+        "started_at,ended_at,duration_seconds,caller_id,caller_city,caller_state,"
+        "caller_zip,caller_country,call_sid,stream_sid,pin_number,status,notes"
+    )
+    path = (
+        f"{SUPABASE_CALL_TABLE}"
+        f"?select={select_cols}"
+        f"&started_at=gte.{start_q}"
+        f"&started_at=lt.{end_q}"
+        f"&order=started_at.desc"
+    )
+    return supabase_request("GET", path) or []
+
+
 # ====================== STARTUP ======================
 load_data()
 init_call_log()
@@ -157,7 +313,9 @@ def status():
         "csv_exists": os.path.exists(CSV_PATH),
         "log_path": LOG_PATH,
         "log_exists": os.path.exists(LOG_PATH),
-        "voice_stack": "twilio_deepgram"
+        "voice_stack": "twilio_deepgram",
+        "supabase_enabled": supabase_enabled(),
+        "supabase_call_table": SUPABASE_CALL_TABLE
     })
 
 
@@ -179,6 +337,84 @@ def download_logs():
     if not os.path.exists(LOG_PATH):
         return "No logs yet.", 404
     return send_file(LOG_PATH, as_attachment=True, download_name="call_logs.csv")
+
+
+@app.route("/call-report")
+def call_report():
+    start_dt, end_exclusive, error = parse_report_dates()
+    if error:
+        return f"""
+            <h2>Call Report</h2>
+            <p>{escape(error)}</p>
+            <p>Example: <code>/call-report?start=2026-04-01&end=2026-04-30</code></p>
+            <p><a href="/status">← Status</a></p>
+        """, 400
+
+    if not supabase_enabled():
+        return "<h2>Supabase is not configured.</h2><p>Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.</p>", 500
+
+    rows = fetch_supabase_call_report(start_dt, end_exclusive)
+    report_df = pd.DataFrame(rows)
+
+    if report_df.empty:
+        html_table = "<p>No calls found for that date range.</p>"
+        total_calls = 0
+        completed_calls = 0
+        avg_length = 0
+    else:
+        total_calls = len(report_df)
+        if "status" in report_df:
+            completed_calls = int((report_df["status"].astype(str) == "completed").sum())
+        else:
+            completed_calls = 0
+        if "duration_seconds" in report_df:
+            avg_length = round(pd.to_numeric(report_df["duration_seconds"], errors="coerce").fillna(0).mean(), 1)
+        else:
+            avg_length = 0
+        html_table = report_df.to_html(index=False)
+
+    start_label = request.args.get("start")
+    end_label = request.args.get("end")
+    csv_url = f"/call-report.csv?start={urllib.parse.quote(start_label)}&end={urllib.parse.quote(end_label)}"
+
+    return render_template_string("""
+        <h2>Call Report</h2>
+        <p><b>Date range:</b> {{ start_label }} through {{ end_label }}</p>
+        <p>
+          <b>Total calls:</b> {{ total_calls }} |
+          <b>Completed calls:</b> {{ completed_calls }} |
+          <b>Average length:</b> {{ avg_length }} seconds
+        </p>
+        <p><a href="{{ csv_url }}">Download CSV</a> | <a href="/status">Status</a></p>
+        {{ html_table|safe }}
+        <style>table, th, td {border:1px solid black; border-collapse:collapse; padding:8px;}</style>
+    """,
+        start_label=start_label,
+        end_label=end_label,
+        total_calls=total_calls,
+        completed_calls=completed_calls,
+        avg_length=avg_length,
+        csv_url=csv_url,
+        html_table=html_table
+    )
+
+
+@app.route("/call-report.csv")
+def call_report_csv():
+    start_dt, end_exclusive, error = parse_report_dates()
+    if error:
+        return error, 400
+    if not supabase_enabled():
+        return "Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.", 500
+
+    rows = fetch_supabase_call_report(start_dt, end_exclusive)
+    report_df = pd.DataFrame(rows)
+    output_path = os.path.join(
+        DATA_DIR,
+        f"call_report_{request.args.get('start')}_to_{request.args.get('end')}.csv"
+    )
+    report_df.to_csv(output_path, index=False)
+    return send_file(output_path, as_attachment=True, download_name=os.path.basename(output_path))
 
 
 @app.route("/upload", methods=["GET", "POST"])
@@ -497,6 +733,7 @@ class VoiceFlow:
         # User requested: no input or anything other than 6 digits gets this exact retry flow.
         if not re.fullmatch(r"\d{6}", pin):
             log_call_to_csv(self.caller_id, self.call_uuid, pin, "PIN Rejected", "Failed pin attempt")
+            stats_update_call(self.call_uuid, pin_number=pin, status="pin_rejected", notes="Failed pin attempt")
             await self.retry_pin()
             return
 
@@ -504,6 +741,7 @@ class VoiceFlow:
         self.dtmf_buffer = ""
         self.step = Step.CONFIRM_PIN
         log_call_to_csv(self.caller_id, self.call_uuid, pin, "PIN Accepted", "Successful pin attempt")
+        stats_update_call(self.call_uuid, pin_number=pin, status="pin_entered", notes="PIN entered and awaiting confirmation")
         await self.say(
             f"Am I right with {speak_pin_digits(pin)}? "
             "Press 1 or say yes, or no or press 2."
@@ -525,6 +763,7 @@ class VoiceFlow:
         self.candidate_pin = ""
         self.dtmf_buffer = ""
         log_call_to_csv(self.caller_id, self.call_uuid, pin, "PIN Accepted", "Results requested")
+        stats_update_call(self.call_uuid, pin_number=pin, status="pin_confirmed", notes="PIN confirmed; results requested")
         await self.read_results()
 
     async def read_results(self) -> None:
@@ -534,6 +773,7 @@ class VoiceFlow:
         if not result_lines:
             logger.info(f"No results found for PIN {pin}")
             log_call_to_csv(self.caller_id, self.call_uuid, pin, "PIN Rejected", "No results found")
+            stats_update_call(self.call_uuid, pin_number=pin, status="no_results", notes="No results found")
             await self.retry_pin()
             return
 
@@ -559,8 +799,10 @@ class VoiceFlow:
 
             if self.stop_results_requested:
                 log_call_to_csv(self.caller_id, self.call_uuid, pin, "PIN Accepted", "Results stopped")
+                stats_update_call(self.call_uuid, pin_number=pin, status="results_stopped", notes="Caller stopped results readback")
             else:
                 log_call_to_csv(self.caller_id, self.call_uuid, pin, "PIN Accepted", "Results read")
+                stats_update_call(self.call_uuid, pin_number=pin, status="results_read", notes="Results read")
 
         finally:
             self.is_reading_results = False
@@ -577,11 +819,13 @@ class VoiceFlow:
 
     async def repeat_results(self) -> None:
         log_call_to_csv(self.caller_id, self.call_uuid, self.confirmed_pin, "PIN Accepted", "Results repeated")
+        stats_update_call(self.call_uuid, pin_number=self.confirmed_pin, status="results_repeated", notes="Results repeated")
         await self.say("Repeating the results.")
         await self.read_results()
 
     async def goodbye(self) -> None:
         log_call_to_csv(self.caller_id, self.call_uuid, self.confirmed_pin, "PIN Accepted", "Call ended")
+        stats_finish_call(self.call_uuid, status="completed", pin_number=self.confirmed_pin, notes="Caller ended call from menu")
         await self.say("Thank you for calling. Goodbye.")
         self.step = Step.ENDED
         self.end_call_requested = True
@@ -757,7 +1001,34 @@ def voice():
     """
     caller = request.values.get("From", "unknown")
     call_sid = request.values.get("CallSid", request.values.get("CallUUID", "unknown"))
+    caller_city = request.values.get("CallerCity", "")
+    caller_state = request.values.get("CallerState", "")
+    caller_zip = request.values.get("CallerZip", "")
+    caller_country = request.values.get("CallerCountry", "")
+    direction = request.values.get("Direction", "")
+
     logger.info(f"INCOMING_CALL | CallSid={call_sid} | From={caller}")
+
+    started_at_dt = datetime.now(timezone.utc)
+    active_calls[call_sid] = {
+        "caller": caller,
+        "pin": "",
+        "started_at_dt": started_at_dt,
+    }
+
+    stats_upsert_call(
+        call_sid,
+        started_at=started_at_dt.isoformat(),
+        caller_id=caller,
+        caller_city=caller_city,
+        caller_state=caller_state,
+        caller_zip=caller_zip,
+        caller_country=caller_country,
+        direction=direction,
+        provider="twilio",
+        status="started",
+        notes="Incoming call",
+    )
 
     ws_url = get_ws_url("/media")
 
@@ -767,6 +1038,10 @@ def voice():
     <Stream url="{escape(ws_url)}">
       <Parameter name="caller" value="{escape(caller)}" />
       <Parameter name="call_sid" value="{escape(call_sid)}" />
+      <Parameter name="caller_city" value="{escape(caller_city)}" />
+      <Parameter name="caller_state" value="{escape(caller_state)}" />
+      <Parameter name="caller_zip" value="{escape(caller_zip)}" />
+      <Parameter name="caller_country" value="{escape(caller_country)}" />
     </Stream>
   </Connect>
 </Response>"""
@@ -782,6 +1057,7 @@ def hangup():
     status = "PIN Accepted" if pin and len(pin) == 6 else "PIN Rejected"
     logger.info(f"Call hung up - PIN={pin} Status={status}")
     log_call_to_csv(caller, call_uuid, pin, status, "Caller hung up")
+    stats_finish_call(call_uuid, status="caller_hung_up", pin_number=pin, notes="Caller hung up")
 
     if call_uuid in active_calls:
         del active_calls[call_uuid]
@@ -952,11 +1228,27 @@ async def media_stream_async(ws) -> None:
                     flow.caller_id = caller_id
                     flow.call_uuid = call_uuid
 
+                    started_at_dt = active_calls.get(call_uuid, {}).get("started_at_dt") or datetime.now(timezone.utc)
                     active_calls[call_uuid] = {
                         "caller": caller_id,
                         "stream_sid": stream_sid,
-                        "pin": ""
+                        "pin": "",
+                        "started_at_dt": started_at_dt,
                     }
+
+                    stats_upsert_call(
+                        call_uuid,
+                        started_at=started_at_dt.isoformat(),
+                        stream_sid=stream_sid,
+                        caller_id=caller_id,
+                        caller_city=custom.get("caller_city", ""),
+                        caller_state=custom.get("caller_state", ""),
+                        caller_zip=custom.get("caller_zip", ""),
+                        caller_country=custom.get("caller_country", ""),
+                        provider="twilio",
+                        status="in_progress",
+                        notes="Media stream started",
+                    )
 
                     logger.info(f"TWILIO: stream started streamSid={stream_sid} call={call_uuid} from={caller_id}")
 
@@ -1003,6 +1295,13 @@ async def media_stream_async(ws) -> None:
 
                 elif event_type == "stop":
                     logger.info("TWILIO: stream stopped")
+                    if not flow.end_call_requested:
+                        stats_finish_call(
+                            call_uuid,
+                            status="stream_stopped",
+                            pin_number=flow.confirmed_pin or flow.candidate_pin,
+                            notes="Twilio stream stopped",
+                        )
                     break
 
         finally:
