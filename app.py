@@ -32,10 +32,9 @@ python-dotenv
 
 Important
 ---------
-This app logs dynamic prompts server-side. The first prompt is audible because it
-is sent in TwiML <Say>. Follow-up prompts during the websocket stream require TTS
-audio to be sent back to Twilio as outbound media frames. The PIN state machine,
-DTMF ingestion, and Deepgram speech ingestion are implemented here.
+This app speaks the first prompt with TwiML <Say>. Follow-up prompts are
+converted to 8 kHz mu-law audio with Deepgram TTS and sent back to Twilio as
+outbound websocket media frames.
 """
 
 from __future__ import annotations
@@ -48,6 +47,8 @@ import os
 import re
 import threading
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Awaitable, Callable, Optional
@@ -262,15 +263,78 @@ def twiml_alias():
     return voice()
 
 
+def deepgram_tts_mulaw_8k(text: str) -> bytes:
+    """
+    Generate raw 8 kHz mu-law audio with Deepgram TTS.
+
+    Twilio Media Streams expects outbound audio payloads as base64-encoded
+    audio/x-mulaw at 8000 Hz, with no WAV/header bytes.
+    """
+    api_key = os.getenv("DEEPGRAM_API_KEY")
+    if not api_key:
+        raise RuntimeError("Missing DEEPGRAM_API_KEY")
+
+    model = os.getenv("DEEPGRAM_TTS_MODEL", "aura-2-thalia-en")
+    url = (
+        f"https://api.deepgram.com/v1/speak"
+        f"?model={model}"
+        f"&encoding=mulaw"
+        f"&sample_rate=8000"
+        f"&container=none"
+    )
+
+    body = json.dumps({"text": text}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Token {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "audio/mulaw",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as exc:
+        err = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Deepgram TTS failed: HTTP {exc.code}: {err}") from exc
+
+
 async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None) -> None:
     """
-    Placeholder speech output.
+    Speak dynamic prompts back into the active Twilio bidirectional Media Stream.
 
-    The initial prompt is spoken by Twilio <Say> in /voice. Dynamic prompts inside
-    the stream are logged for now. Later, generate mu-law 8kHz TTS audio and send
-    Twilio outbound websocket media messages here.
+    If stream_sid is not available yet, we can only log. The first prompt is still
+    audible because /voice returns TwiML with <Say>.
     """
     print(f"APP: {text}", flush=True)
+
+    if ws is None or not stream_sid:
+        print("APP: no active streamSid yet; prompt logged only", flush=True)
+        return
+
+    try:
+        audio = await asyncio.to_thread(deepgram_tts_mulaw_8k, text)
+        payload = base64.b64encode(audio).decode("ascii")
+
+        ws.send(json.dumps({
+            "event": "media",
+            "streamSid": stream_sid,
+            "media": {"payload": payload},
+        }))
+
+        # Optional mark lets Twilio notify us when playback catches up.
+        ws.send(json.dumps({
+            "event": "mark",
+            "streamSid": stream_sid,
+            "mark": {"name": f"prompt-{int(time.time() * 1000)}"},
+        }))
+
+    except Exception as exc:
+        print(f"APP: failed to speak prompt to call: {exc}", flush=True)
 
 
 async def media_stream_async(ws) -> None:
