@@ -281,15 +281,25 @@ def telnyx_voice():
     Telnyx TeXML webhook.
 
     Point a Telnyx TeXML application here if you want the same app to accept
-    Telnyx calls. Experimental. Twilio is the known-good path; Telnyx may need provider-specific stream setup.
+    Telnyx calls. Uses Telnyx <Start><Stream> with bidirectional RTP enabled.
     """
     ws_url = get_ws_url("/media")
 
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Connect>
-    <Stream url="{ws_url}" track="inbound_track" codec="PCMU" />
-  </Connect>
+  <Start>
+    <Stream
+      url="{ws_url}"
+      track="inbound_track"
+      codec="PCMU"
+      bidirectionalMode="rtp"
+      bidirectionalCodec="PCMU"
+      bidirectionalSamplingRate="8000"
+      enableReconnect="false">
+      <Parameter name="provider" value="telnyx" />
+    </Stream>
+  </Start>
+  <Pause length="600" />
 </Response>"""
     return Response(xml, mimetype="application/xml")
 
@@ -403,7 +413,7 @@ def deepgram_tts_mulaw_8k(text: str) -> bytes:
         raise RuntimeError(f"Deepgram TTS failed: HTTP {exc.code}: {err}") from exc
 
 
-async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None, stream_id: Optional[str] = None) -> None:
+async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None, stream_id: Optional[str] = None, provider: str = "twilio") -> None:
     """
     Speak dynamic prompts back into the active Twilio bidirectional Media Stream.
 
@@ -433,11 +443,17 @@ async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None, stre
                     continue
 
                 payload = base64.b64encode(chunk).decode("ascii")
-                ws.send(json.dumps({
-                    "event": "media",
-                    "streamSid": active_stream_id,
-                    "media": {"payload": payload},
-                }))
+                if provider == "telnyx":
+                    ws.send(json.dumps({
+                        "event": "media",
+                        "media": {"payload": payload},
+                    }))
+                else:
+                    ws.send(json.dumps({
+                        "event": "media",
+                        "streamSid": active_stream_id,
+                        "media": {"payload": payload},
+                    }))
                 total_frames += 1
 
                 if sleep_seconds > 0:
@@ -446,19 +462,33 @@ async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None, stre
             detail = f"{len(audio)} bytes, {total_frames} chunked frames"
         else:
             payload = base64.b64encode(audio).decode("ascii")
-            ws.send(json.dumps({
-                "event": "media",
-                "streamSid": active_stream_id,
-                "media": {"payload": payload},
-            }))
-            detail = f"{len(audio)} bytes, single media message"
+            if provider == "telnyx":
+                # Telnyx bidirectional RTP media event: no streamSid wrapper required.
+                ws.send(json.dumps({
+                    "event": "media",
+                    "media": {"payload": payload},
+                }))
+            else:
+                ws.send(json.dumps({
+                    "event": "media",
+                    "streamSid": active_stream_id,
+                    "media": {"payload": payload},
+                }))
+            detail = f"{len(audio)} bytes, single media message, provider={provider}"
 
         mark_name = f"prompt-{int(time.time() * 1000)}"
-        ws.send(json.dumps({
-            "event": "mark",
-            "streamSid": active_stream_id,
-            "mark": {"name": mark_name},
-        }))
+        if provider == "telnyx":
+            # Telnyx does not need Twilio's streamSid on mark.
+            ws.send(json.dumps({
+                "event": "mark",
+                "mark": {"name": mark_name},
+            }))
+        else:
+            ws.send(json.dumps({
+                "event": "mark",
+                "streamSid": active_stream_id,
+                "mark": {"name": mark_name},
+            }))
 
         print(f"APP: sent TTS to call: {detail}, mark={mark_name}", flush=True)
 
@@ -469,6 +499,7 @@ async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None, stre
 
 async def media_stream_async(ws) -> None:
     stream_id: Optional[str] = None
+    provider = "twilio"
 
     # Avoid self-hearing and stale recognition: while we are playing TTS back
     # into the call, ignore Deepgram transcripts until shortly after playback.
@@ -478,7 +509,7 @@ async def media_stream_async(ws) -> None:
     async def say(text: str) -> None:
         nonlocal listen_resume_at
         listen_resume_at = time.monotonic() + 3600.0
-        await say_to_call(text, ws=ws, stream_sid=stream_id)
+        await say_to_call(text, ws=ws, stream_sid=stream_id, provider=provider)
         listen_resume_at = time.monotonic() + (resume_delay_ms / 1000.0)
 
     flow = PinFlow(say=say)
@@ -570,18 +601,30 @@ async def media_stream_async(ws) -> None:
                 event_type = event.get("event")
 
                 if event_type == "connected":
-                    print("MEDIA: connected", flush=True)
+                    print(f"MEDIA: connected provider={provider}", flush=True)
 
                 elif event_type == "start":
                     start_data = event.get("start", {}) or {}
-                    # Twilio uses streamSid. Telnyx commonly uses stream_id.
+                    custom_params = (
+                        start_data.get("customParameters")
+                        or start_data.get("custom_parameters")
+                        or start_data.get("parameters")
+                        or {}
+                    )
+
+                    # Twilio uses streamSid. Telnyx uses stream_id and includes media_format.
+                    if event.get("stream_id") or start_data.get("media_format") or custom_params.get("provider") == "telnyx":
+                        provider = "telnyx"
+                    else:
+                        provider = "twilio"
+
                     stream_id = (
                         event.get("streamSid")
                         or event.get("stream_id")
                         or start_data.get("streamSid")
                         or start_data.get("stream_id")
                     )
-                    print(f"MEDIA: stream started {stream_id}", flush=True)
+                    print(f"MEDIA: stream started {stream_id} provider={provider} start={start_data}", flush=True)
 
                     if stream_id and not getattr(flow, "initial_prompt_sent", False):
                         flow.initial_prompt_sent = True
