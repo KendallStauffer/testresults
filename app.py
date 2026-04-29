@@ -276,7 +276,7 @@ def telnyx_voice():
     Telnyx TeXML webhook.
 
     Point a Telnyx TeXML application here if you want the same app to accept
-    Telnyx calls. It streams audio to /media, just like Twilio.
+    Telnyx calls. Experimental. Twilio is the known-good path; Telnyx may need provider-specific stream setup.
     """
     ws_url = get_ws_url("/media")
 
@@ -403,39 +403,58 @@ async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None, stre
     """
     Speak dynamic prompts back into the active Twilio bidirectional Media Stream.
 
-    If stream_sid is not available yet, we can only log. The first prompt is still
-    audible because /voice returns TwiML with <Say>.
+    Twilio expects outbound media as base64-encoded raw mu-law/8000 audio.
+    To keep playback reliable, send small 20 ms frames instead of one huge blob.
     """
     print(f"APP: {text}", flush=True)
 
     active_stream_id = stream_sid or stream_id
 
     if ws is None or not active_stream_id:
-        print("APP: no active streamSid yet; prompt logged only", flush=True)
+        print("APP: no active stream id yet; prompt logged only", flush=True)
         return
 
     try:
         audio = await asyncio.to_thread(deepgram_tts_mulaw_8k, text)
-        payload = base64.b64encode(audio).decode("ascii")
 
-        media_msg = {
-            "event": "media",
-            "streamSid": active_stream_id,   # Twilio
-            "stream_id": active_stream_id,   # Telnyx-style compatibility
-            "media": {"payload": payload},
-        }
-        ws.send(json.dumps(media_msg))
+        # 8 kHz mu-law = 8000 bytes/sec. 20 ms = 160 bytes.
+        # Sending 20 ms frames matches telephony packet pacing and is much more
+        # reliable than pushing the whole TTS file as one websocket message.
+        frame_size = int(os.getenv("TTS_FRAME_BYTES", "160"))
+        sleep_seconds = frame_size / 8000.0
 
-        # Optional mark lets Twilio notify us when playback catches up.
+        total_frames = 0
+        for i in range(0, len(audio), frame_size):
+            chunk = audio[i:i + frame_size]
+            if not chunk:
+                continue
+
+            payload = base64.b64encode(chunk).decode("ascii")
+            ws.send(json.dumps({
+                "event": "media",
+                "streamSid": active_stream_id,
+                "media": {"payload": payload},
+            }))
+            total_frames += 1
+
+            # Pace the audio so Twilio can play it smoothly.
+            await asyncio.sleep(sleep_seconds)
+
+        mark_name = f"prompt-{int(time.time() * 1000)}"
         ws.send(json.dumps({
             "event": "mark",
             "streamSid": active_stream_id,
-            "stream_id": active_stream_id,
-            "mark": {"name": f"prompt-{int(time.time() * 1000)}"},
+            "mark": {"name": mark_name},
         }))
+
+        print(
+            f"APP: sent TTS to call: {len(audio)} bytes, {total_frames} frames, mark={mark_name}",
+            flush=True,
+        )
 
     except Exception as exc:
         print(f"APP: failed to speak prompt to call: {exc}", flush=True)
+
 
 
 async def media_stream_async(ws) -> None:
@@ -547,6 +566,9 @@ async def media_stream_async(ws) -> None:
                     if digit:
                         print(f"MEDIA DTMF: {digit}", flush=True)
                         await flow.handle_dtmf(digit)
+
+                elif event_type == "mark":
+                    print(f"MEDIA MARK: {event.get('mark')}", flush=True)
 
                 elif event_type == "stop":
                     print("MEDIA: stream stopped", flush=True)
