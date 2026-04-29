@@ -15,10 +15,9 @@ Required Render env vars
 ------------------------
 DEEPGRAM_API_KEY=your_deepgram_key
 BASE_URL=https://testresults-1aja.onrender.com
-DEEPGRAM_ENDPOINTING_MS=125
-TTS_GAIN=1.0
-TTS_SEND_MODE=single
-LISTEN_RESUME_DELAY_MS=300
+DEEPGRAM_ENDPOINTING_MS=100
+TTS_GAIN=1.6
+LISTEN_RESUME_DELAY_MS=0
 
 Recommended Render start command
 --------------------------------
@@ -36,8 +35,9 @@ python-dotenv
 
 Important
 ---------
-This app converts prompts to 8 kHz mu-law audio with Deepgram TTS and sends
-that audio to Twilio as outbound websocket media frames.
+This app speaks the first prompt with TwiML <Say>. Follow-up prompts are
+converted to 8 kHz mu-law audio with Deepgram TTS and sent back to Twilio as
+outbound websocket media frames.
 """
 
 from __future__ import annotations
@@ -262,6 +262,7 @@ def voice():
 
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
+  <Say>Please enter or say your 6 digit PIN.</Say>
   <Connect>
     <Stream url="{ws_url}" />
   </Connect>
@@ -281,25 +282,16 @@ def telnyx_voice():
     Telnyx TeXML webhook.
 
     Point a Telnyx TeXML application here if you want the same app to accept
-    Telnyx calls. Uses Telnyx <Start><Stream> with bidirectional RTP enabled.
+    Telnyx calls. Experimental. Twilio is the known-good path; Telnyx may need provider-specific stream setup.
     """
     ws_url = get_ws_url("/media")
 
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Start>
-    <Stream
-      url="{ws_url}"
-      track="inbound_track"
-      codec="PCMU"
-      bidirectionalMode="rtp"
-      bidirectionalCodec="PCMU"
-      bidirectionalSamplingRate="8000"
-      enableReconnect="false">
-      <Parameter name="provider" value="telnyx" />
-    </Stream>
-  </Start>
-  <Pause length="600" />
+  <Say>Please enter or say your 6 digit PIN.</Say>
+  <Connect>
+    <Stream url="{ws_url}" track="inbound_track" codec="PCMU" />
+  </Connect>
 </Response>"""
     return Response(xml, mimetype="application/xml")
 
@@ -413,12 +405,12 @@ def deepgram_tts_mulaw_8k(text: str) -> bytes:
         raise RuntimeError(f"Deepgram TTS failed: HTTP {exc.code}: {err}") from exc
 
 
-async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None, stream_id: Optional[str] = None, provider: str = "twilio") -> None:
+async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None, stream_id: Optional[str] = None) -> None:
     """
     Speak dynamic prompts back into the active Twilio bidirectional Media Stream.
 
-    Default is single-send because it sounded clearer in testing.
-    Set TTS_SEND_MODE=chunked only if a provider requires paced frames.
+    Twilio expects outbound media as base64-encoded raw mu-law/8000 audio.
+    To keep playback reliable, send small 20 ms frames instead of one huge blob.
     """
     print(f"APP: {text}", flush=True)
 
@@ -430,67 +422,41 @@ async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None, stre
 
     try:
         audio = await asyncio.to_thread(deepgram_tts_mulaw_8k, text)
-        send_mode = os.getenv("TTS_SEND_MODE", "single").strip().lower()
 
-        if send_mode == "chunked":
-            frame_size = int(os.getenv("TTS_FRAME_BYTES", "320"))
-            sleep_seconds = float(os.getenv("TTS_FRAME_SLEEP_SECONDS", "0.0"))
-            total_frames = 0
+        # 8 kHz mu-law = 8000 bytes/sec. 20 ms = 160 bytes.
+        # Sending 20 ms frames matches telephony packet pacing and is much more
+        # reliable than pushing the whole TTS file as one websocket message.
+        frame_size = int(os.getenv("TTS_FRAME_BYTES", "160"))
+        sleep_seconds = frame_size / 8000.0
 
-            for i in range(0, len(audio), frame_size):
-                chunk = audio[i:i + frame_size]
-                if not chunk:
-                    continue
+        total_frames = 0
+        for i in range(0, len(audio), frame_size):
+            chunk = audio[i:i + frame_size]
+            if not chunk:
+                continue
 
-                payload = base64.b64encode(chunk).decode("ascii")
-                if provider == "telnyx":
-                    ws.send(json.dumps({
-                        "event": "media",
-                        "media": {"payload": payload},
-                    }))
-                else:
-                    ws.send(json.dumps({
-                        "event": "media",
-                        "streamSid": active_stream_id,
-                        "media": {"payload": payload},
-                    }))
-                total_frames += 1
+            payload = base64.b64encode(chunk).decode("ascii")
+            ws.send(json.dumps({
+                "event": "media",
+                "streamSid": active_stream_id,
+                "media": {"payload": payload},
+            }))
+            total_frames += 1
 
-                if sleep_seconds > 0:
-                    await asyncio.sleep(sleep_seconds)
-
-            detail = f"{len(audio)} bytes, {total_frames} chunked frames"
-        else:
-            payload = base64.b64encode(audio).decode("ascii")
-            if provider == "telnyx":
-                # Telnyx bidirectional RTP media event: no streamSid wrapper required.
-                ws.send(json.dumps({
-                    "event": "media",
-                    "media": {"payload": payload},
-                }))
-            else:
-                ws.send(json.dumps({
-                    "event": "media",
-                    "streamSid": active_stream_id,
-                    "media": {"payload": payload},
-                }))
-            detail = f"{len(audio)} bytes, single media message, provider={provider}"
+            # Pace the audio so Twilio can play it smoothly.
+            await asyncio.sleep(sleep_seconds)
 
         mark_name = f"prompt-{int(time.time() * 1000)}"
-        if provider == "telnyx":
-            # Telnyx does not need Twilio's streamSid on mark.
-            ws.send(json.dumps({
-                "event": "mark",
-                "mark": {"name": mark_name},
-            }))
-        else:
-            ws.send(json.dumps({
-                "event": "mark",
-                "streamSid": active_stream_id,
-                "mark": {"name": mark_name},
-            }))
+        ws.send(json.dumps({
+            "event": "mark",
+            "streamSid": active_stream_id,
+            "mark": {"name": mark_name},
+        }))
 
-        print(f"APP: sent TTS to call: {detail}, mark={mark_name}", flush=True)
+        print(
+            f"APP: sent TTS to call: {len(audio)} bytes, {total_frames} frames, mark={mark_name}",
+            flush=True,
+        )
 
     except Exception as exc:
         print(f"APP: failed to speak prompt to call: {exc}", flush=True)
@@ -499,22 +465,21 @@ async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None, stre
 
 async def media_stream_async(ws) -> None:
     stream_id: Optional[str] = None
-    provider = "twilio"
 
     # Avoid self-hearing and stale recognition: while we are playing TTS back
     # into the call, ignore Deepgram transcripts until shortly after playback.
     listen_resume_at = 0.0
-    resume_delay_ms = int(os.getenv("LISTEN_RESUME_DELAY_MS", "500"))
+    resume_delay_ms = int(os.getenv("LISTEN_RESUME_DELAY_MS", "0"))
 
     async def say(text: str) -> None:
         nonlocal listen_resume_at
         listen_resume_at = time.monotonic() + 3600.0
-        await say_to_call(text, ws=ws, stream_sid=stream_id, provider=provider)
+        await say_to_call(text, ws=ws, stream_sid=stream_id)
         listen_resume_at = time.monotonic() + (resume_delay_ms / 1000.0)
 
     flow = PinFlow(say=say)
-    # The first prompt is sent after the provider sends the stream start event,
-    # so all prompts use the same Deepgram TTS voice.
+    # /voice already plays the first prompt with Twilio <Say>.
+    # Keep the state ready without sending another prompt over the stream.
     flow.step = Step.ASK_PIN
     flow.candidate_pin = ""
     flow.dtmf_buffer = ""
@@ -524,8 +489,7 @@ async def media_stream_async(ws) -> None:
         await say("Missing DEEPGRAM_API_KEY on the server.")
         return
 
-    endpointing_ms = int(os.getenv("DEEPGRAM_ENDPOINTING_MS", "125"))
-    interim_results = os.getenv("DEEPGRAM_INTERIM_RESULTS", "true").strip().lower()
+    endpointing_ms = int(os.getenv("DEEPGRAM_ENDPOINTING_MS", "175"))
 
     dg_url = (
         "wss://api.deepgram.com/v1/listen"
@@ -534,14 +498,9 @@ async def media_stream_async(ws) -> None:
         "&encoding=mulaw"
         "&sample_rate=8000"
         "&channels=1"
-        f"&interim_results={interim_results}"
-        "&smart_format=true"
+        "&interim_results=false"
+        f"&smart_format={smart_format}"
         f"&endpointing={endpointing_ms}"
-    )
-
-    print(
-        f"DEEPGRAM STT SETTINGS: endpointing_ms={endpointing_ms}, interim_results={interim_results}",
-        flush=True,
     )
 
     async with websockets.connect(
@@ -567,28 +526,15 @@ async def media_stream_async(ws) -> None:
                     continue
 
                 transcript = (alternatives[0].get("transcript") or "").strip()
-                is_final = bool(data.get("is_final"))
-                speech_final = bool(data.get("speech_final"))
+                is_final = data.get("is_final") or data.get("speech_final")
 
-                # With interim_results=true, Deepgram may send partial transcripts.
-                # We only act when endpointing says speech_final, or when a final
-                # segment arrives. This keeps accuracy while making endpointing more responsive.
-                should_handle = transcript and (speech_final or is_final)
-
-                if should_handle:
+                if transcript and is_final:
                     now = time.monotonic()
                     if now < listen_resume_at:
-                        print(
-                            f"DEEPGRAM IGNORED DURING TTS: {transcript} "
-                            f"is_final={is_final} speech_final={speech_final}",
-                            flush=True,
-                        )
+                        print(f"DEEPGRAM IGNORED DURING TTS: {transcript}", flush=True)
                         continue
 
-                    print(
-                        f"DEEPGRAM: {transcript} is_final={is_final} speech_final={speech_final}",
-                        flush=True,
-                    )
+                    print(f"DEEPGRAM: {transcript}", flush=True)
                     await flow.handle_transcript(transcript)
 
         dg_task = asyncio.create_task(receive_deepgram())
@@ -620,34 +566,18 @@ async def media_stream_async(ws) -> None:
                 event_type = event.get("event")
 
                 if event_type == "connected":
-                    print(f"MEDIA: connected provider={provider}", flush=True)
+                    print("MEDIA: connected", flush=True)
 
                 elif event_type == "start":
                     start_data = event.get("start", {}) or {}
-                    custom_params = (
-                        start_data.get("customParameters")
-                        or start_data.get("custom_parameters")
-                        or start_data.get("parameters")
-                        or {}
-                    )
-
-                    # Twilio uses streamSid. Telnyx uses stream_id and includes media_format.
-                    if event.get("stream_id") or start_data.get("media_format") or custom_params.get("provider") == "telnyx":
-                        provider = "telnyx"
-                    else:
-                        provider = "twilio"
-
+                    # Twilio uses streamSid. Telnyx commonly uses stream_id.
                     stream_id = (
                         event.get("streamSid")
                         or event.get("stream_id")
                         or start_data.get("streamSid")
                         or start_data.get("stream_id")
                     )
-                    print(f"MEDIA: stream started {stream_id} provider={provider} start={start_data}", flush=True)
-
-                    if stream_id and not getattr(flow, "initial_prompt_sent", False):
-                        flow.initial_prompt_sent = True
-                        await flow.prompt_for_pin()
+                    print(f"MEDIA: stream started {stream_id}", flush=True)
 
                 elif event_type == "media":
                     payload = event.get("media", {}).get("payload")
