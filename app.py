@@ -307,6 +307,7 @@ YES_WORDS = {"yes", "yeah", "yep", "correct", "right", "confirm", "confirmed", "
 NO_WORDS = {"no", "nope", "wrong", "incorrect", "false", "2", "two"}
 REPEAT_WORDS = {"repeat", "again", "replay", "1", "one"}
 GOODBYE_WORDS = {"goodbye", "bye", "end", "hangup", "hang", "2", "two"}
+STOP_WORDS = {"stop", "end", "menu", "enough", "cancel"}
 
 
 class Step(str, Enum):
@@ -343,6 +344,11 @@ def extract_post_results_action(text: str) -> Optional[str]:
     if words & GOODBYE_WORDS:
         return "goodbye"
     return None
+
+
+def is_stop_request(text: str) -> bool:
+    words = set(re.findall(r"[a-zA-Z0-9]+", text.lower()))
+    return bool(words & STOP_WORDS)
 
 
 def format_results_for_pin(pin: str) -> list[str]:
@@ -387,6 +393,8 @@ class VoiceFlow:
     confirmed_pin: str = ""
     dtmf_buffer: str = field(default_factory=str)
     end_call_requested: bool = False
+    is_reading_results: bool = False
+    stop_results_requested: bool = False
 
     async def prompt_for_pin(self) -> None:
         self.step = Step.ASK_PIN
@@ -447,6 +455,14 @@ class VoiceFlow:
         if not transcript:
             return
 
+        # During result playback, let callers say "stop" or "end" to jump to
+        # the repeat/goodbye menu. We intentionally do not treat "end" as
+        # immediate goodbye here because the user asked for the menu.
+        if self.is_reading_results and is_stop_request(transcript):
+            logger.info(f"STOP REQUEST DURING RESULTS: {transcript}")
+            self.stop_results_requested = True
+            return
+
         if self.step == Step.CONFIRM_PIN:
             yn = extract_yes_no(transcript)
             if yn is True:
@@ -489,7 +505,7 @@ class VoiceFlow:
         self.step = Step.CONFIRM_PIN
         log_call_to_csv(self.caller_id, self.call_uuid, pin, "PIN Accepted", "Successful pin attempt")
         await self.say(
-            f"Am I right with PIN {speak_pin_digits(pin)}? "
+            f"Am I right with {speak_pin_digits(pin)}? "
             "Press 1 or say yes, or no or press 2."
         )
 
@@ -521,11 +537,31 @@ class VoiceFlow:
             await self.retry_pin()
             return
 
-        for line in result_lines:
-            await self.say(line)
-            await asyncio.sleep(0.1)
+        self.is_reading_results = True
+        self.stop_results_requested = False
+        pause_seconds = float(os.getenv("RESULT_LINE_PAUSE_SECONDS", "0.45"))
 
-        log_call_to_csv(self.caller_id, self.call_uuid, pin, "PIN Accepted", "Results read")
+        try:
+            for line in result_lines:
+                if self.stop_results_requested:
+                    logger.info("Result playback stopped by caller")
+                    break
+
+                await self.say(line)
+
+                # Pause between facts so results don't run together and so
+                # a "stop" utterance can be processed between lines.
+                await asyncio.sleep(pause_seconds)
+
+            if self.stop_results_requested:
+                log_call_to_csv(self.caller_id, self.call_uuid, pin, "PIN Accepted", "Results stopped")
+            else:
+                log_call_to_csv(self.caller_id, self.call_uuid, pin, "PIN Accepted", "Results read")
+
+        finally:
+            self.is_reading_results = False
+            self.stop_results_requested = False
+
         await self.ask_post_results_action()
 
     async def ask_post_results_action(self) -> None:
@@ -794,10 +830,12 @@ async def media_stream_async(ws) -> None:
 
                 logger.info(f"DEEPGRAM: {transcript} is_final={is_final} speech_final={speech_final}")
 
-                # Confirmation/action barge-in.
+                # Confirmation/action/result barge-in.
                 if flow.step == Step.CONFIRM_PIN and extract_yes_no(transcript) is not None:
                     clear_twilio_audio(ws, stream_sid)
                 elif flow.step == Step.POST_RESULTS_ACTION and extract_post_results_action(transcript) is not None:
+                    clear_twilio_audio(ws, stream_sid)
+                elif flow.is_reading_results and is_stop_request(transcript):
                     clear_twilio_audio(ws, stream_sid)
 
                 await flow.handle_transcript(transcript)
@@ -862,7 +900,11 @@ async def media_stream_async(ws) -> None:
                 elif event_type == "media":
                     payload = event.get("media", {}).get("payload")
                     if payload:
-                        await dg_ws.send(base64.b64decode(payload))
+                        try:
+                            await dg_ws.send(base64.b64decode(payload))
+                        except Exception as exc:
+                            logger.warning(f"Deepgram socket closed while forwarding media: {exc}")
+                            break
 
                 elif event_type == "dtmf":
                     digit = event.get("dtmf", {}).get("digit")
@@ -889,9 +931,9 @@ async def media_stream_async(ws) -> None:
         finally:
             dg_task.cancel()
             try:
-                await dg_ws.close()
-            except Exception:
-                pass
+                await asyncio.wait_for(dg_ws.close(), timeout=1.0)
+            except Exception as exc:
+                logger.info(f"Deepgram close ignored: {exc}")
 
             if call_uuid in active_calls and flow.end_call_requested:
                 del active_calls[call_uuid]
