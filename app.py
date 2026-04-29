@@ -399,7 +399,7 @@ def deepgram_tts_mulaw_8k(text: str) -> bytes:
         raise RuntimeError(f"Deepgram TTS failed: HTTP {exc.code}: {err}") from exc
 
 
-async def say_to_call(text: str, ws=None, stream_id: Optional[str] = None) -> None:
+async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None, stream_id: Optional[str] = None) -> None:
     """
     Speak dynamic prompts back into the active Twilio bidirectional Media Stream.
 
@@ -408,7 +408,9 @@ async def say_to_call(text: str, ws=None, stream_id: Optional[str] = None) -> No
     """
     print(f"APP: {text}", flush=True)
 
-    if ws is None or not stream_sid:
+    active_stream_id = stream_sid or stream_id
+
+    if ws is None or not active_stream_id:
         print("APP: no active streamSid yet; prompt logged only", flush=True)
         return
 
@@ -418,8 +420,8 @@ async def say_to_call(text: str, ws=None, stream_id: Optional[str] = None) -> No
 
         media_msg = {
             "event": "media",
-            "streamSid": stream_sid,   # Twilio
-            "stream_id": stream_sid,   # Telnyx-style compatibility
+            "streamSid": active_stream_id,   # Twilio
+            "stream_id": active_stream_id,   # Telnyx-style compatibility
             "media": {"payload": payload},
         }
         ws.send(json.dumps(media_msg))
@@ -427,8 +429,8 @@ async def say_to_call(text: str, ws=None, stream_id: Optional[str] = None) -> No
         # Optional mark lets Twilio notify us when playback catches up.
         ws.send(json.dumps({
             "event": "mark",
-            "streamSid": stream_sid,
-            "stream_id": stream_sid,
+            "streamSid": active_stream_id,
+            "stream_id": active_stream_id,
             "mark": {"name": f"prompt-{int(time.time() * 1000)}"},
         }))
 
