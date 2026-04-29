@@ -765,6 +765,10 @@ async def media_stream_async(ws) -> None:
     flow = VoiceFlow(say=say)
     flow.step = Step.ASK_PIN
 
+    # Keep Deepgram's websocket reader responsive. Long actions like reading
+    # results run in this task instead of blocking receive_deepgram().
+    action_task: Optional[asyncio.Task] = None
+
     dg_api_key = os.getenv("DEEPGRAM_API_KEY")
     if not dg_api_key:
         await say("Missing Deepgram API key on the server.")
@@ -830,15 +834,29 @@ async def media_stream_async(ws) -> None:
 
                 logger.info(f"DEEPGRAM: {transcript} is_final={is_final} speech_final={speech_final}")
 
-                # Confirmation/action/result barge-in.
+                nonlocal action_task
+
+                # Result-read barge-in must be handled immediately, even while
+                # a result-reading task is running.
+                if flow.is_reading_results and is_stop_request(transcript):
+                    logger.info(f"STOP REQUEST DURING RESULTS: {transcript}")
+                    flow.stop_results_requested = True
+                    clear_twilio_audio(ws, stream_sid)
+                    continue
+
+                # Confirmation/action barge-in.
                 if flow.step == Step.CONFIRM_PIN and extract_yes_no(transcript) is not None:
                     clear_twilio_audio(ws, stream_sid)
                 elif flow.step == Step.POST_RESULTS_ACTION and extract_post_results_action(transcript) is not None:
                     clear_twilio_audio(ws, stream_sid)
-                elif flow.is_reading_results and is_stop_request(transcript):
-                    clear_twilio_audio(ws, stream_sid)
 
-                await flow.handle_transcript(transcript)
+                # If a long action is already running, ignore extra speech
+                # unless it was the result-stop case above.
+                if action_task and not action_task.done():
+                    logger.info(f"IGNORED TRANSCRIPT WHILE ACTION RUNNING: {transcript}")
+                    continue
+
+                action_task = asyncio.create_task(flow.handle_transcript(transcript))
 
         dg_task = asyncio.create_task(receive_deepgram())
 
@@ -916,7 +934,17 @@ async def media_stream_async(ws) -> None:
                         elif flow.step == Step.POST_RESULTS_ACTION and digit in {"1", "2"}:
                             clear_twilio_audio(ws, stream_sid)
 
-                        await flow.handle_dtmf(digit)
+                        # DTMF can trigger long actions such as result readback.
+                        # Run it in the action task so websocket media forwarding
+                        # and Deepgram receive stay responsive.
+                        if action_task and not action_task.done():
+                            if flow.is_reading_results and digit in {"1", "2"}:
+                                logger.info(f"IGNORED DTMF DURING RESULT READBACK: {digit}")
+                            else:
+                                logger.info(f"IGNORED DTMF WHILE ACTION RUNNING: {digit}")
+                            continue
+
+                        action_task = asyncio.create_task(flow.handle_dtmf(digit))
 
                         if flow.confirmed_pin and call_uuid in active_calls:
                             active_calls[call_uuid]["pin"] = flow.confirmed_pin
@@ -930,6 +958,9 @@ async def media_stream_async(ws) -> None:
 
         finally:
             dg_task.cancel()
+            if action_task and not action_task.done():
+                action_task.cancel()
+
             try:
                 await asyncio.wait_for(dg_ws.close(), timeout=1.0)
             except Exception as exc:
