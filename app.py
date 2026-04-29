@@ -15,7 +15,7 @@ Required Render env vars
 ------------------------
 DEEPGRAM_API_KEY=your_deepgram_key
 BASE_URL=https://testresults-1aja.onrender.com
-DEEPGRAM_ENDPOINTING_MS=175
+DEEPGRAM_ENDPOINTING_MS=125
 TTS_GAIN=1.0
 TTS_SEND_MODE=single
 LISTEN_RESUME_DELAY_MS=300
@@ -524,7 +524,8 @@ async def media_stream_async(ws) -> None:
         await say("Missing DEEPGRAM_API_KEY on the server.")
         return
 
-    endpointing_ms = int(os.getenv("DEEPGRAM_ENDPOINTING_MS", "175"))
+    endpointing_ms = int(os.getenv("DEEPGRAM_ENDPOINTING_MS", "125"))
+    interim_results = os.getenv("DEEPGRAM_INTERIM_RESULTS", "true").strip().lower()
 
     dg_url = (
         "wss://api.deepgram.com/v1/listen"
@@ -533,9 +534,14 @@ async def media_stream_async(ws) -> None:
         "&encoding=mulaw"
         "&sample_rate=8000"
         "&channels=1"
-        "&interim_results=false"
+        f"&interim_results={interim_results}"
         "&smart_format=true"
         f"&endpointing={endpointing_ms}"
+    )
+
+    print(
+        f"DEEPGRAM STT SETTINGS: endpointing_ms={endpointing_ms}, interim_results={interim_results}",
+        flush=True,
     )
 
     async with websockets.connect(
@@ -561,15 +567,28 @@ async def media_stream_async(ws) -> None:
                     continue
 
                 transcript = (alternatives[0].get("transcript") or "").strip()
-                is_final = data.get("is_final") or data.get("speech_final")
+                is_final = bool(data.get("is_final"))
+                speech_final = bool(data.get("speech_final"))
 
-                if transcript and is_final:
+                # With interim_results=true, Deepgram may send partial transcripts.
+                # We only act when endpointing says speech_final, or when a final
+                # segment arrives. This keeps accuracy while making endpointing more responsive.
+                should_handle = transcript and (speech_final or is_final)
+
+                if should_handle:
                     now = time.monotonic()
                     if now < listen_resume_at:
-                        print(f"DEEPGRAM IGNORED DURING TTS: {transcript}", flush=True)
+                        print(
+                            f"DEEPGRAM IGNORED DURING TTS: {transcript} "
+                            f"is_final={is_final} speech_final={speech_final}",
+                            flush=True,
+                        )
                         continue
 
-                    print(f"DEEPGRAM: {transcript}", flush=True)
+                    print(
+                        f"DEEPGRAM: {transcript} is_final={is_final} speech_final={speech_final}",
+                        flush=True,
+                    )
                     await flow.handle_transcript(transcript)
 
         dg_task = asyncio.create_task(receive_deepgram())
