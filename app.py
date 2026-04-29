@@ -15,9 +15,8 @@ Required Render env vars
 ------------------------
 DEEPGRAM_API_KEY=your_deepgram_key
 BASE_URL=https://testresults-1aja.onrender.com
-DEEPGRAM_ENDPOINTING_MS=100
+DEEPGRAM_ENDPOINTING_MS=175
 TTS_GAIN=1.6
-LISTEN_RESUME_DELAY_MS=0
 
 Recommended Render start command
 --------------------------------
@@ -185,20 +184,15 @@ class PinFlow:
             return
 
         self.candidate_pin = pin
-        self.dtmf_buffer = ""
         self.step = Step.CONFIRM_PIN
         await self.say(f"Am I right with PIN {self.spoken_pin(pin)}? Press 1 or say yes, or no or press 2.")
 
     async def confirm_no(self) -> None:
-        self.candidate_pin = ""
-        self.dtmf_buffer = ""
         await self.say("Let's try again.")
         await self.prompt_for_pin()
 
     async def confirm_yes(self) -> None:
         pin = self.candidate_pin
-        self.candidate_pin = ""
-        self.dtmf_buffer = ""
         await self.say(f"Confirmed. The PIN is {self.spoken_pin(pin)}.")
         await asyncio.sleep(self.delay_seconds)
         await self.prompt_for_pin()
@@ -282,7 +276,7 @@ def telnyx_voice():
     Telnyx TeXML webhook.
 
     Point a Telnyx TeXML application here if you want the same app to accept
-    Telnyx calls. Experimental. Twilio is the known-good path; Telnyx may need provider-specific stream setup.
+    Telnyx calls. It streams audio to /media, just like Twilio.
     """
     ws_url = get_ws_url("/media")
 
@@ -405,91 +399,60 @@ def deepgram_tts_mulaw_8k(text: str) -> bytes:
         raise RuntimeError(f"Deepgram TTS failed: HTTP {exc.code}: {err}") from exc
 
 
-async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None, stream_id: Optional[str] = None) -> None:
+async def say_to_call(text: str, ws=None, stream_id: Optional[str] = None) -> None:
     """
     Speak dynamic prompts back into the active Twilio bidirectional Media Stream.
 
-    Twilio expects outbound media as base64-encoded raw mu-law/8000 audio.
-    To keep playback reliable, send small 20 ms frames instead of one huge blob.
+    If stream_sid is not available yet, we can only log. The first prompt is still
+    audible because /voice returns TwiML with <Say>.
     """
     print(f"APP: {text}", flush=True)
 
-    active_stream_id = stream_sid or stream_id
-
-    if ws is None or not active_stream_id:
-        print("APP: no active stream id yet; prompt logged only", flush=True)
+    if ws is None or not stream_sid:
+        print("APP: no active streamSid yet; prompt logged only", flush=True)
         return
 
     try:
         audio = await asyncio.to_thread(deepgram_tts_mulaw_8k, text)
+        payload = base64.b64encode(audio).decode("ascii")
 
-        # 8 kHz mu-law = 8000 bytes/sec. 20 ms = 160 bytes.
-        # Sending 20 ms frames matches telephony packet pacing and is much more
-        # reliable than pushing the whole TTS file as one websocket message.
-        frame_size = int(os.getenv("TTS_FRAME_BYTES", "160"))
-        sleep_seconds = frame_size / 8000.0
+        media_msg = {
+            "event": "media",
+            "streamSid": stream_sid,   # Twilio
+            "stream_id": stream_sid,   # Telnyx-style compatibility
+            "media": {"payload": payload},
+        }
+        ws.send(json.dumps(media_msg))
 
-        total_frames = 0
-        for i in range(0, len(audio), frame_size):
-            chunk = audio[i:i + frame_size]
-            if not chunk:
-                continue
-
-            payload = base64.b64encode(chunk).decode("ascii")
-            ws.send(json.dumps({
-                "event": "media",
-                "streamSid": active_stream_id,
-                "media": {"payload": payload},
-            }))
-            total_frames += 1
-
-            # Pace the audio so Twilio can play it smoothly.
-            await asyncio.sleep(sleep_seconds)
-
-        mark_name = f"prompt-{int(time.time() * 1000)}"
+        # Optional mark lets Twilio notify us when playback catches up.
         ws.send(json.dumps({
             "event": "mark",
-            "streamSid": active_stream_id,
-            "mark": {"name": mark_name},
+            "streamSid": stream_sid,
+            "stream_id": stream_sid,
+            "mark": {"name": f"prompt-{int(time.time() * 1000)}"},
         }))
-
-        print(
-            f"APP: sent TTS to call: {len(audio)} bytes, {total_frames} frames, mark={mark_name}",
-            flush=True,
-        )
 
     except Exception as exc:
         print(f"APP: failed to speak prompt to call: {exc}", flush=True)
 
 
-
 async def media_stream_async(ws) -> None:
     stream_id: Optional[str] = None
 
-    # Avoid self-hearing and stale recognition: while we are playing TTS back
-    # into the call, ignore Deepgram transcripts until shortly after playback.
-    listen_resume_at = 0.0
-    resume_delay_ms = int(os.getenv("LISTEN_RESUME_DELAY_MS", "0"))
-
     async def say(text: str) -> None:
-        nonlocal listen_resume_at
-        listen_resume_at = time.monotonic() + 3600.0
         await say_to_call(text, ws=ws, stream_sid=stream_id)
-        listen_resume_at = time.monotonic() + (resume_delay_ms / 1000.0)
 
     flow = PinFlow(say=say)
-    # /voice already plays the first prompt with Twilio <Say>.
-    # Keep the state ready without sending another prompt over the stream.
-    flow.step = Step.ASK_PIN
-    flow.candidate_pin = ""
-    flow.dtmf_buffer = ""
+    await flow.start()
 
     dg_api_key = os.getenv("DEEPGRAM_API_KEY")
     if not dg_api_key:
         await say("Missing DEEPGRAM_API_KEY on the server.")
         return
 
-    endpointing_ms = int(os.getenv("DEEPGRAM_ENDPOINTING_MS", "175"))
+    endpointing_ms = int(os.getenv("DEEPGRAM_ENDPOINTING_MS", "100"))
+    interim_results = os.getenv("DEEPGRAM_INTERIM_RESULTS", "true").strip().lower()
+    smart_format = os.getenv("DEEPGRAM_SMART_FORMAT", "false").strip().lower()
 
     dg_url = (
         "wss://api.deepgram.com/v1/listen"
@@ -498,10 +461,12 @@ async def media_stream_async(ws) -> None:
         "&encoding=mulaw"
         "&sample_rate=8000"
         "&channels=1"
-        "&interim_results=false"
+        f"&interim_results={interim_results}"
         f"&smart_format={smart_format}"
         f"&endpointing={endpointing_ms}"
     )
+
+    print(f"DEEPGRAM STT SETTINGS: endpointing_ms={endpointing_ms}, interim_results={interim_results}, smart_format={smart_format}", flush=True)
 
     async with websockets.connect(
         dg_url,
@@ -529,11 +494,6 @@ async def media_stream_async(ws) -> None:
                 is_final = data.get("is_final") or data.get("speech_final")
 
                 if transcript and is_final:
-                    now = time.monotonic()
-                    if now < listen_resume_at:
-                        print(f"DEEPGRAM IGNORED DURING TTS: {transcript}", flush=True)
-                        continue
-
                     print(f"DEEPGRAM: {transcript}", flush=True)
                     await flow.handle_transcript(transcript)
 
@@ -589,9 +549,6 @@ async def media_stream_async(ws) -> None:
                     if digit:
                         print(f"MEDIA DTMF: {digit}", flush=True)
                         await flow.handle_dtmf(digit)
-
-                elif event_type == "mark":
-                    print(f"MEDIA MARK: {event.get('mark')}", flush=True)
 
                 elif event_type == "stop":
                     print("MEDIA: stream stopped", flush=True)
