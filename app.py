@@ -274,7 +274,7 @@ def deepgram_tts_mulaw_8k(text: str) -> bytes:
     if not api_key:
         raise RuntimeError("Missing DEEPGRAM_API_KEY")
 
-    model = os.getenv("DEEPGRAM_TTS_MODEL", "aura-2-thalia-en")
+    model = os.getenv("DEEPGRAM_TTS_MODEL", "aura-2-luna-en")
     url = (
         f"https://api.deepgram.com/v1/speak"
         f"?model={model}"
