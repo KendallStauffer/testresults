@@ -184,6 +184,13 @@ class PinFlow:
     async def submit_pin_text(self, text: str) -> None:
         pin = extract_digits(text)
 
+        # A stale "yes" or "no" can arrive right after a confirmation prompt
+        # while we have already moved back to ASK_PIN. Ignore it instead of
+        # treating it as a bad PIN and re-prompting immediately.
+        if not pin and extract_yes_no(text) is not None:
+            print(f"IGNORED STRAY CONFIRMATION WHILE ASKING PIN: {text}", flush=True)
+            return
+
         if not re.fullmatch(r"\d{6}", pin):
             self.candidate_pin = ""
             self.dtmf_buffer = ""
@@ -356,6 +363,23 @@ def deepgram_tts_mulaw_8k(text: str) -> bytes:
         raise RuntimeError(f"Deepgram TTS failed: HTTP {exc.code}: {err}") from exc
 
 
+def clear_twilio_audio(ws, stream_sid: Optional[str]) -> None:
+    """
+    Interrupt any outbound audio Twilio has buffered for this stream.
+    Used for barge-in during confirmation.
+    """
+    if not ws or not stream_sid:
+        return
+    try:
+        ws.send(json.dumps({
+            "event": "clear",
+            "streamSid": stream_sid,
+        }))
+        print("APP: sent Twilio clear for barge-in", flush=True)
+    except Exception as exc:
+        print(f"APP: failed to clear Twilio audio: {exc}", flush=True)
+
+
 async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None) -> None:
     """
     Send Deepgram TTS back to Twilio as one raw mu-law media message.
@@ -410,6 +434,9 @@ async def media_stream_async(ws) -> None:
     flow.step = Step.ASK_PIN
     flow.candidate_pin = ""
     flow.dtmf_buffer = ""
+    # Runtime-only fields for Twilio barge-in.
+    flow.ws = ws
+    flow.get_stream_sid = lambda: stream_sid
 
     dg_api_key = os.getenv("DEEPGRAM_API_KEY")
     if not dg_api_key:
@@ -480,6 +507,12 @@ async def media_stream_async(ws) -> None:
                     f"DEEPGRAM: {transcript} is_final={is_final} speech_final={speech_final}",
                     flush=True,
                 )
+
+                # Barge-in for confirmation: if the user answers yes/no while the
+                # confirmation prompt is still playing, clear Twilio's audio buffer.
+                if flow.step == Step.CONFIRM_PIN and extract_yes_no(transcript) is not None:
+                    clear_twilio_audio(ws, stream_sid)
+
                 await flow.handle_transcript(transcript)
 
         dg_task = asyncio.create_task(receive_deepgram())
@@ -526,6 +559,11 @@ async def media_stream_async(ws) -> None:
                     digit = event.get("dtmf", {}).get("digit")
                     if digit:
                         print(f"TWILIO DTMF: {digit}", flush=True)
+
+                        # Barge-in for keypad confirmation.
+                        if flow.step == Step.CONFIRM_PIN and digit in {"1", "2", "0", "*"}:
+                            clear_twilio_audio(ws, stream_sid)
+
                         await flow.handle_dtmf(digit)
 
                 elif event_type == "mark":
