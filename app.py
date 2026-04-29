@@ -1,42 +1,52 @@
 #!/usr/bin/env python3
 """
-Flask + Gunicorn PIN capture test app for Render.
+Twilio + Deepgram PIN capture test app for Render.
 
-Flow
-----
-1) Twilio hits /voice.
-2) /voice returns TwiML with <Connect><Stream url="wss://.../media" />.
-3) /media receives Twilio websocket events:
-   - media audio frames -> forwarded to Deepgram streaming STT
-   - dtmf digits -> handled directly
-4) App asks for a 6 digit PIN, validates it, confirms it, then loops.
+Routes
+------
+/voice   Twilio Voice webhook. Returns TwiML with bidirectional Media Stream.
+/media   Twilio websocket route.
+/health  Health check.
 
-Required Render env vars
-------------------------
-DEEPGRAM_API_KEY=your_deepgram_key
-BASE_URL=https://testresults-1aja.onrender.com
-DEEPGRAM_ENDPOINTING_MS=175
-TTS_GAIN=1.6
+Render
+------
+Start command:
+    gunicorn app:app
 
-Recommended Render start command
---------------------------------
-python app.py
+Keep gunicorn.conf.py in the repo root so Gunicorn uses gthread + Render PORT.
 
-Requirements
-------------
-flask
-flask-sock
-twilio
-pandas
-gunicorn
-websockets
-python-dotenv
+Requirements:
+    flask
+    flask-sock
+    twilio
+    pandas
+    gunicorn
+    websockets
+    python-dotenv
 
-Important
----------
-This app speaks the first prompt with TwiML <Say>. Follow-up prompts are
-converted to 8 kHz mu-law audio with Deepgram TTS and sent back to Twilio as
-outbound websocket media frames.
+Environment variables
+---------------------
+Required:
+    DEEPGRAM_API_KEY=...
+    BASE_URL=https://testresults-1aja.onrender.com
+
+Recommended:
+    DEEPGRAM_TTS_MODEL=aura-2-luna-en
+    DEEPGRAM_ENDPOINTING_MS=100
+    DEEPGRAM_INTERIM_RESULTS=true
+    DEEPGRAM_SMART_FORMAT=false
+    TTS_GAIN=1.0
+    LISTEN_RESUME_DELAY_MS=0
+
+Behavior
+--------
+- Prompts for a 6 digit PIN.
+- Accepts spoken digits via Deepgram STT.
+- Accepts Twilio DTMF digits.
+- If not exactly 6 digits: "I didn't get that. Let's try again."
+- If 6 digits: "Am I right with PIN ...? Press 1 or say yes, or no or press 2."
+- If no/2: retry.
+- If yes/1: reads value, delays, and re-prompts.
 """
 
 from __future__ import annotations
@@ -45,10 +55,8 @@ import argparse
 import asyncio
 import base64
 import json
-import math
 import os
 import re
-import threading
 import time
 import urllib.error
 import urllib.request
@@ -60,6 +68,7 @@ import websockets
 from dotenv import load_dotenv
 from flask import Flask, Response, request
 from flask_sock import Sock
+
 try:
     from simple_websocket.errors import ConnectionClosed
 except Exception:  # pragma: no cover
@@ -122,9 +131,6 @@ class PinFlow:
     candidate_pin: str = ""
     dtmf_buffer: str = field(default_factory=str)
 
-    async def start(self) -> None:
-        await self.prompt_for_pin()
-
     async def prompt_for_pin(self) -> None:
         self.step = Step.ASK_PIN
         self.candidate_pin = ""
@@ -179,20 +185,30 @@ class PinFlow:
         pin = extract_digits(text)
 
         if not re.fullmatch(r"\d{6}", pin):
+            self.candidate_pin = ""
+            self.dtmf_buffer = ""
             await self.say("I didn't get that. Let's try again.")
             await self.prompt_for_pin()
             return
 
         self.candidate_pin = pin
+        self.dtmf_buffer = ""
         self.step = Step.CONFIRM_PIN
-        await self.say(f"Am I right with PIN {self.spoken_pin(pin)}? Press 1 or say yes, or no or press 2.")
+        await self.say(
+            f"Am I right with PIN {self.spoken_pin(pin)}? "
+            "Press 1 or say yes, or no or press 2."
+        )
 
     async def confirm_no(self) -> None:
+        self.candidate_pin = ""
+        self.dtmf_buffer = ""
         await self.say("Let's try again.")
         await self.prompt_for_pin()
 
     async def confirm_yes(self) -> None:
         pin = self.candidate_pin
+        self.candidate_pin = ""
+        self.dtmf_buffer = ""
         await self.say(f"Confirmed. The PIN is {self.spoken_pin(pin)}.")
         await asyncio.sleep(self.delay_seconds)
         await self.prompt_for_pin()
@@ -208,16 +224,13 @@ async def cli_say(text: str) -> None:
 
 async def run_cli() -> None:
     flow = PinFlow(say=cli_say)
-    await flow.start()
+    await flow.prompt_for_pin()
 
     while True:
         user_input = input("YOU: ").strip()
         if user_input.lower() in {"quit", "exit"}:
             break
 
-        # Test DTMF by typing:
-        #   dtmf 123456
-        #   dtmf 1
         if user_input.lower().startswith("dtmf "):
             for d in user_input.split(maxsplit=1)[1]:
                 await flow.handle_dtmf(d)
@@ -230,7 +243,6 @@ def get_base_url() -> str:
     if base_url:
         return base_url
 
-    # Fallback for local testing only.
     host = request.headers.get("host", "localhost:8000")
     scheme = "https" if "onrender.com" in host else request.scheme
     return f"{scheme}://{host}"
@@ -249,14 +261,15 @@ def health():
 @app.route("/voice", methods=["GET", "POST"])
 def voice():
     """
-    Twilio Voice webhook. Your Twilio number should point here:
+    Twilio Voice webhook:
     https://testresults-1aja.onrender.com/voice
     """
     ws_url = get_ws_url("/media")
 
+    # No <Say> here. The first prompt is generated by Deepgram TTS after the
+    # websocket start event, so every prompt uses the same voice.
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say>Please enter or say your 6 digit PIN.</Say>
   <Connect>
     <Stream url="{ws_url}" />
   </Connect>
@@ -266,50 +279,10 @@ def voice():
 
 @app.route("/twiml", methods=["GET", "POST"])
 def twiml_alias():
-    """Optional alias. /voice is the one you said your app uses."""
     return voice()
 
 
-@app.route("/telnyx/voice", methods=["GET", "POST"])
-def telnyx_voice():
-    """
-    Telnyx TeXML webhook.
-
-    Point a Telnyx TeXML application here if you want the same app to accept
-    Telnyx calls. It streams audio to /media, just like Twilio.
-    """
-    ws_url = get_ws_url("/media")
-
-    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say>Please enter or say your 6 digit PIN.</Say>
-  <Connect>
-    <Stream url="{ws_url}" track="inbound_track" codec="PCMU" />
-  </Connect>
-</Response>"""
-    return Response(xml, mimetype="application/xml")
-
-
-@app.route("/telnyx/call-control", methods=["POST"])
-def telnyx_call_control():
-    """
-    Placeholder for Telnyx Call Control webhooks.
-
-    For Call Control, Telnyx sends HTTP events here. To actually answer calls
-    and start media streaming, add TELNYX_API_KEY and call Telnyx's answer/start
-    streaming APIs using the call_control_id from the webhook.
-    """
-    event = request.get_json(silent=True) or {}
-    print(f"TELNYX CALL CONTROL EVENT: {event}", flush=True)
-    return {"ok": True}
-
-
 def mulaw_byte_to_linear(byte: int) -> int:
-    """
-    Decode one 8-bit mu-law byte to signed 16-bit PCM.
-
-    Pure Python implementation because Python 3.14 no longer includes audioop.
-    """
     byte = (~byte) & 0xFF
     sign = byte & 0x80
     exponent = (byte >> 4) & 0x07
@@ -320,9 +293,6 @@ def mulaw_byte_to_linear(byte: int) -> int:
 
 
 def linear_to_mulaw_byte(sample: int) -> int:
-    """
-    Encode one signed 16-bit PCM sample to 8-bit mu-law.
-    """
     sample = max(-32635, min(32635, int(sample)))
     sign = 0x80 if sample < 0 else 0
     if sample < 0:
@@ -340,13 +310,6 @@ def linear_to_mulaw_byte(sample: int) -> int:
 
 
 def apply_mulaw_gain(audio: bytes, gain: float) -> bytes:
-    """
-    Increase/decrease raw mu-law volume.
-
-    TTS_GAIN=1.0 means unchanged.
-    TTS_GAIN=1.4 to 1.8 is usually a reasonable phone-call boost.
-    Too high can distort/clamp.
-    """
     if abs(gain - 1.0) < 0.001:
         return audio
 
@@ -358,23 +321,17 @@ def apply_mulaw_gain(audio: bytes, gain: float) -> bytes:
 
 
 def deepgram_tts_mulaw_8k(text: str) -> bytes:
-    """
-    Generate raw 8 kHz mu-law audio with Deepgram TTS.
-
-    Twilio Media Streams expects outbound audio payloads as base64-encoded
-    audio/x-mulaw at 8000 Hz, with no WAV/header bytes.
-    """
     api_key = os.getenv("DEEPGRAM_API_KEY")
     if not api_key:
         raise RuntimeError("Missing DEEPGRAM_API_KEY")
 
     model = os.getenv("DEEPGRAM_TTS_MODEL", "aura-2-luna-en")
     url = (
-        f"https://api.deepgram.com/v1/speak"
+        "https://api.deepgram.com/v1/speak"
         f"?model={model}"
-        f"&encoding=mulaw"
-        f"&sample_rate=8000"
-        f"&container=none"
+        "&encoding=mulaw"
+        "&sample_rate=8000"
+        "&container=none"
     )
 
     body = json.dumps({"text": text}).encode("utf-8")
@@ -392,58 +349,67 @@ def deepgram_tts_mulaw_8k(text: str) -> bytes:
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
             audio = resp.read()
-            gain = float(os.getenv("TTS_GAIN", "1.6"))
+            gain = float(os.getenv("TTS_GAIN", "1.0"))
             return apply_mulaw_gain(audio, gain)
     except urllib.error.HTTPError as exc:
         err = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Deepgram TTS failed: HTTP {exc.code}: {err}") from exc
 
 
-async def say_to_call(text: str, ws=None, stream_id: Optional[str] = None) -> None:
+async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None) -> None:
     """
-    Speak dynamic prompts back into the active Twilio bidirectional Media Stream.
+    Send Deepgram TTS back to Twilio as one raw mu-law media message.
 
-    If stream_sid is not available yet, we can only log. The first prompt is still
-    audible because /voice returns TwiML with <Say>.
+    Single-send is the mode that was clear in your tests. Chunked mode caused
+    static, so this clean Twilio version intentionally does not chunk playback.
     """
     print(f"APP: {text}", flush=True)
 
     if ws is None or not stream_sid:
-        print("APP: no active streamSid yet; prompt logged only", flush=True)
+        print("APP: no streamSid yet; prompt logged only", flush=True)
         return
 
     try:
         audio = await asyncio.to_thread(deepgram_tts_mulaw_8k, text)
         payload = base64.b64encode(audio).decode("ascii")
 
-        media_msg = {
+        ws.send(json.dumps({
             "event": "media",
-            "streamSid": stream_sid,   # Twilio
-            "stream_id": stream_sid,   # Telnyx-style compatibility
+            "streamSid": stream_sid,
             "media": {"payload": payload},
-        }
-        ws.send(json.dumps(media_msg))
+        }))
 
-        # Optional mark lets Twilio notify us when playback catches up.
+        mark_name = f"prompt-{int(time.time() * 1000)}"
         ws.send(json.dumps({
             "event": "mark",
             "streamSid": stream_sid,
-            "stream_id": stream_sid,
-            "mark": {"name": f"prompt-{int(time.time() * 1000)}"},
+            "mark": {"name": mark_name},
         }))
+
+        print(
+            f"APP: sent TTS to call: {len(audio)} bytes, single media message, mark={mark_name}",
+            flush=True,
+        )
 
     except Exception as exc:
         print(f"APP: failed to speak prompt to call: {exc}", flush=True)
 
 
 async def media_stream_async(ws) -> None:
-    stream_id: Optional[str] = None
+    stream_sid: Optional[str] = None
+    listen_resume_at = 0.0
+    resume_delay_ms = int(os.getenv("LISTEN_RESUME_DELAY_MS", "0"))
 
     async def say(text: str) -> None:
-        await say_to_call(text, ws=ws, stream_sid=stream_id)
+        nonlocal listen_resume_at
+        listen_resume_at = time.monotonic() + 3600.0
+        await say_to_call(text, ws=ws, stream_sid=stream_sid)
+        listen_resume_at = time.monotonic() + (resume_delay_ms / 1000.0)
 
     flow = PinFlow(say=say)
-    await flow.start()
+    flow.step = Step.ASK_PIN
+    flow.candidate_pin = ""
+    flow.dtmf_buffer = ""
 
     dg_api_key = os.getenv("DEEPGRAM_API_KEY")
     if not dg_api_key:
@@ -466,7 +432,11 @@ async def media_stream_async(ws) -> None:
         f"&endpointing={endpointing_ms}"
     )
 
-    print(f"DEEPGRAM STT SETTINGS: endpointing_ms={endpointing_ms}, interim_results={interim_results}, smart_format={smart_format}", flush=True)
+    print(
+        f"DEEPGRAM STT SETTINGS: endpointing_ms={endpointing_ms}, "
+        f"interim_results={interim_results}, smart_format={smart_format}",
+        flush=True,
+    )
 
     async with websockets.connect(
         dg_url,
@@ -491,30 +461,40 @@ async def media_stream_async(ws) -> None:
                     continue
 
                 transcript = (alternatives[0].get("transcript") or "").strip()
-                is_final = data.get("is_final") or data.get("speech_final")
+                is_final = bool(data.get("is_final"))
+                speech_final = bool(data.get("speech_final"))
 
-                if transcript and is_final:
-                    print(f"DEEPGRAM: {transcript}", flush=True)
-                    await flow.handle_transcript(transcript)
+                if not transcript or not (speech_final or is_final):
+                    continue
+
+                now = time.monotonic()
+                if now < listen_resume_at:
+                    print(
+                        f"DEEPGRAM IGNORED DURING TTS: {transcript} "
+                        f"is_final={is_final} speech_final={speech_final}",
+                        flush=True,
+                    )
+                    continue
+
+                print(
+                    f"DEEPGRAM: {transcript} is_final={is_final} speech_final={speech_final}",
+                    flush=True,
+                )
+                await flow.handle_transcript(transcript)
 
         dg_task = asyncio.create_task(receive_deepgram())
 
         try:
             while True:
-                # Flask-Sock/simple-websocket is synchronous. Calling ws.receive()
-                # directly inside async code blocks the event loop and can cause
-                # Gunicorn to kill the worker. Run it in a thread and use a short
-                # timeout so Deepgram receive tasks keep moving.
                 try:
                     raw_msg = await asyncio.to_thread(ws.receive, 1)
                 except ConnectionClosed:
-                    print("MEDIA: websocket closed", flush=True)
+                    print("TWILIO: websocket closed", flush=True)
                     break
                 except Exception as exc:
-                    print(f"MEDIA: websocket receive error: {exc}", flush=True)
+                    print(f"TWILIO: websocket receive error: {exc}", flush=True)
                     break
 
-                # None means timeout/no message yet. Keep polling.
                 if raw_msg is None:
                     continue
 
@@ -526,18 +506,16 @@ async def media_stream_async(ws) -> None:
                 event_type = event.get("event")
 
                 if event_type == "connected":
-                    print("MEDIA: connected", flush=True)
+                    print("TWILIO: connected", flush=True)
 
                 elif event_type == "start":
                     start_data = event.get("start", {}) or {}
-                    # Twilio uses streamSid. Telnyx commonly uses stream_id.
-                    stream_id = (
-                        event.get("streamSid")
-                        or event.get("stream_id")
-                        or start_data.get("streamSid")
-                        or start_data.get("stream_id")
-                    )
-                    print(f"MEDIA: stream started {stream_id}", flush=True)
+                    stream_sid = event.get("streamSid") or start_data.get("streamSid")
+                    print(f"TWILIO: stream started {stream_sid}", flush=True)
+
+                    if stream_sid and not getattr(flow, "initial_prompt_sent", False):
+                        flow.initial_prompt_sent = True
+                        await flow.prompt_for_pin()
 
                 elif event_type == "media":
                     payload = event.get("media", {}).get("payload")
@@ -547,11 +525,14 @@ async def media_stream_async(ws) -> None:
                 elif event_type == "dtmf":
                     digit = event.get("dtmf", {}).get("digit")
                     if digit:
-                        print(f"MEDIA DTMF: {digit}", flush=True)
+                        print(f"TWILIO DTMF: {digit}", flush=True)
                         await flow.handle_dtmf(digit)
 
+                elif event_type == "mark":
+                    print(f"TWILIO MARK: {event.get('mark')}", flush=True)
+
                 elif event_type == "stop":
-                    print("MEDIA: stream stopped", flush=True)
+                    print("TWILIO: stream stopped", flush=True)
                     break
 
         finally:
@@ -564,26 +545,18 @@ async def media_stream_async(ws) -> None:
 
 @sock.route("/media")
 def media(ws):
-    """
-    Twilio Media Streams websocket route.
-
-    Flask-Sock websocket handlers are synchronous functions, so we run the async
-    Deepgram/Twilio bridge inside an event loop for this connection.
-    """
     asyncio.run(media_stream_async(ws))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cli", action="store_true", help="Run a terminal-only test loop.")
+    parser.add_argument("--cli", action="store_true", help="Run terminal-only test mode.")
     args = parser.parse_args()
 
     if args.cli:
         asyncio.run(run_cli())
         return
 
-    # Render injects PORT automatically. This is the "port connect" built into
-    # the app so the Render start command can stay: python app.py
     port = int(os.getenv("PORT", "8000"))
     print(f"Starting Flask app on 0.0.0.0:{port}", flush=True)
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
