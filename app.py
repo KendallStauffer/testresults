@@ -15,6 +15,8 @@ Required Render env vars
 ------------------------
 DEEPGRAM_API_KEY=your_deepgram_key
 BASE_URL=https://testresults-1aja.onrender.com
+DEEPGRAM_ENDPOINTING_MS=175
+TTS_GAIN=1.6
 
 Recommended Render start command
 --------------------------------
@@ -43,6 +45,7 @@ import argparse
 import asyncio
 import base64
 import json
+import math
 import os
 import re
 import threading
@@ -176,13 +179,13 @@ class PinFlow:
         pin = extract_digits(text)
 
         if not re.fullmatch(r"\d{6}", pin):
-            await self.say("A PIN must be 6 numeric digits. Let's try again.")
+            await self.say("I didn't get that. Let's try again.")
             await self.prompt_for_pin()
             return
 
         self.candidate_pin = pin
         self.step = Step.CONFIRM_PIN
-        await self.say(f"Am I right with {self.spoken_pin(pin)}? Say yes or press 1. Say no or press 2.")
+        await self.say(f"Am I right with PIN {self.spoken_pin(pin)}? Press 1 or say yes, or no or press 2.")
 
     async def confirm_no(self) -> None:
         await self.say("Let's try again.")
@@ -233,6 +236,11 @@ def get_base_url() -> str:
     return f"{scheme}://{host}"
 
 
+def get_ws_url(path: str = "/media") -> str:
+    base_url = get_base_url()
+    return base_url.replace("https://", "wss://").replace("http://", "ws://") + path
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "time": int(time.time())}
@@ -244,8 +252,7 @@ def voice():
     Twilio Voice webhook. Your Twilio number should point here:
     https://testresults-1aja.onrender.com/voice
     """
-    base_url = get_base_url()
-    ws_url = base_url.replace("https://", "wss://").replace("http://", "ws://") + "/media"
+    ws_url = get_ws_url("/media")
 
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -261,6 +268,93 @@ def voice():
 def twiml_alias():
     """Optional alias. /voice is the one you said your app uses."""
     return voice()
+
+
+@app.route("/telnyx/voice", methods=["GET", "POST"])
+def telnyx_voice():
+    """
+    Telnyx TeXML webhook.
+
+    Point a Telnyx TeXML application here if you want the same app to accept
+    Telnyx calls. It streams audio to /media, just like Twilio.
+    """
+    ws_url = get_ws_url("/media")
+
+    xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>Please enter or say your 6 digit PIN.</Say>
+  <Connect>
+    <Stream url="{ws_url}" track="inbound_track" codec="PCMU" />
+  </Connect>
+</Response>"""
+    return Response(xml, mimetype="application/xml")
+
+
+@app.route("/telnyx/call-control", methods=["POST"])
+def telnyx_call_control():
+    """
+    Placeholder for Telnyx Call Control webhooks.
+
+    For Call Control, Telnyx sends HTTP events here. To actually answer calls
+    and start media streaming, add TELNYX_API_KEY and call Telnyx's answer/start
+    streaming APIs using the call_control_id from the webhook.
+    """
+    event = request.get_json(silent=True) or {}
+    print(f"TELNYX CALL CONTROL EVENT: {event}", flush=True)
+    return {"ok": True}
+
+
+def mulaw_byte_to_linear(byte: int) -> int:
+    """
+    Decode one 8-bit mu-law byte to signed 16-bit PCM.
+
+    Pure Python implementation because Python 3.14 no longer includes audioop.
+    """
+    byte = (~byte) & 0xFF
+    sign = byte & 0x80
+    exponent = (byte >> 4) & 0x07
+    mantissa = byte & 0x0F
+    sample = ((mantissa << 3) + 0x84) << exponent
+    sample -= 0x84
+    return -sample if sign else sample
+
+
+def linear_to_mulaw_byte(sample: int) -> int:
+    """
+    Encode one signed 16-bit PCM sample to 8-bit mu-law.
+    """
+    sample = max(-32635, min(32635, int(sample)))
+    sign = 0x80 if sample < 0 else 0
+    if sample < 0:
+        sample = -sample
+    sample += 0x84
+
+    exponent = 7
+    mask = 0x4000
+    while exponent > 0 and not (sample & mask):
+        mask >>= 1
+        exponent -= 1
+
+    mantissa = (sample >> (exponent + 3)) & 0x0F
+    return (~(sign | (exponent << 4) | mantissa)) & 0xFF
+
+
+def apply_mulaw_gain(audio: bytes, gain: float) -> bytes:
+    """
+    Increase/decrease raw mu-law volume.
+
+    TTS_GAIN=1.0 means unchanged.
+    TTS_GAIN=1.4 to 1.8 is usually a reasonable phone-call boost.
+    Too high can distort/clamp.
+    """
+    if abs(gain - 1.0) < 0.001:
+        return audio
+
+    out = bytearray(len(audio))
+    for i, byte in enumerate(audio):
+        sample = mulaw_byte_to_linear(byte)
+        out[i] = linear_to_mulaw_byte(sample * gain)
+    return bytes(out)
 
 
 def deepgram_tts_mulaw_8k(text: str) -> bytes:
@@ -297,13 +391,15 @@ def deepgram_tts_mulaw_8k(text: str) -> bytes:
 
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            return resp.read()
+            audio = resp.read()
+            gain = float(os.getenv("TTS_GAIN", "1.6"))
+            return apply_mulaw_gain(audio, gain)
     except urllib.error.HTTPError as exc:
         err = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Deepgram TTS failed: HTTP {exc.code}: {err}") from exc
 
 
-async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None) -> None:
+async def say_to_call(text: str, ws=None, stream_id: Optional[str] = None) -> None:
     """
     Speak dynamic prompts back into the active Twilio bidirectional Media Stream.
 
@@ -320,16 +416,19 @@ async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None) -> N
         audio = await asyncio.to_thread(deepgram_tts_mulaw_8k, text)
         payload = base64.b64encode(audio).decode("ascii")
 
-        ws.send(json.dumps({
+        media_msg = {
             "event": "media",
-            "streamSid": stream_sid,
+            "streamSid": stream_sid,   # Twilio
+            "stream_id": stream_sid,   # Telnyx-style compatibility
             "media": {"payload": payload},
-        }))
+        }
+        ws.send(json.dumps(media_msg))
 
         # Optional mark lets Twilio notify us when playback catches up.
         ws.send(json.dumps({
             "event": "mark",
             "streamSid": stream_sid,
+            "stream_id": stream_sid,
             "mark": {"name": f"prompt-{int(time.time() * 1000)}"},
         }))
 
@@ -338,10 +437,10 @@ async def say_to_call(text: str, ws=None, stream_sid: Optional[str] = None) -> N
 
 
 async def media_stream_async(ws) -> None:
-    stream_sid: Optional[str] = None
+    stream_id: Optional[str] = None
 
     async def say(text: str) -> None:
-        await say_to_call(text, ws=ws, stream_sid=stream_sid)
+        await say_to_call(text, ws=ws, stream_sid=stream_id)
 
     flow = PinFlow(say=say)
     await flow.start()
@@ -350,6 +449,8 @@ async def media_stream_async(ws) -> None:
     if not dg_api_key:
         await say("Missing DEEPGRAM_API_KEY on the server.")
         return
+
+    endpointing_ms = int(os.getenv("DEEPGRAM_ENDPOINTING_MS", "175"))
 
     dg_url = (
         "wss://api.deepgram.com/v1/listen"
@@ -360,7 +461,7 @@ async def media_stream_async(ws) -> None:
         "&channels=1"
         "&interim_results=false"
         "&smart_format=true"
-        "&endpointing=300"
+        f"&endpointing={endpointing_ms}"
     )
 
     async with websockets.connect(
@@ -403,10 +504,10 @@ async def media_stream_async(ws) -> None:
                 try:
                     raw_msg = await asyncio.to_thread(ws.receive, 1)
                 except ConnectionClosed:
-                    print("TWILIO: websocket closed", flush=True)
+                    print("MEDIA: websocket closed", flush=True)
                     break
                 except Exception as exc:
-                    print(f"TWILIO: websocket receive error: {exc}", flush=True)
+                    print(f"MEDIA: websocket receive error: {exc}", flush=True)
                     break
 
                 # None means timeout/no message yet. Keep polling.
@@ -421,11 +522,18 @@ async def media_stream_async(ws) -> None:
                 event_type = event.get("event")
 
                 if event_type == "connected":
-                    print("TWILIO: connected", flush=True)
+                    print("MEDIA: connected", flush=True)
 
                 elif event_type == "start":
-                    stream_sid = event.get("streamSid") or event.get("start", {}).get("streamSid")
-                    print(f"TWILIO: stream started {stream_sid}", flush=True)
+                    start_data = event.get("start", {}) or {}
+                    # Twilio uses streamSid. Telnyx commonly uses stream_id.
+                    stream_id = (
+                        event.get("streamSid")
+                        or event.get("stream_id")
+                        or start_data.get("streamSid")
+                        or start_data.get("stream_id")
+                    )
+                    print(f"MEDIA: stream started {stream_id}", flush=True)
 
                 elif event_type == "media":
                     payload = event.get("media", {}).get("payload")
@@ -435,11 +543,11 @@ async def media_stream_async(ws) -> None:
                 elif event_type == "dtmf":
                     digit = event.get("dtmf", {}).get("digit")
                     if digit:
-                        print(f"TWILIO DTMF: {digit}", flush=True)
+                        print(f"MEDIA DTMF: {digit}", flush=True)
                         await flow.handle_dtmf(digit)
 
                 elif event_type == "stop":
-                    print("TWILIO: stream stopped", flush=True)
+                    print("MEDIA: stream stopped", flush=True)
                     break
 
         finally:
