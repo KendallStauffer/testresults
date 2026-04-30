@@ -737,15 +737,20 @@ class VoiceFlow:
             await self.retry_pin()
             return
 
-        self.candidate_pin = pin
+        # User requested: a clean 6-digit PIN should not be confirmed.
+        # Go straight to lookup/readback. Invalid or unclear input still uses
+        # the existing retry flow above.
+        self.confirmed_pin = pin
+        self.candidate_pin = ""
         self.dtmf_buffer = ""
-        self.step = Step.CONFIRM_PIN
         log_call_to_csv(self.caller_id, self.call_uuid, pin, "PIN Accepted", "Successful pin attempt")
-        stats_update_call(self.call_uuid, pin_number=pin, status="pin_entered", notes="PIN entered and awaiting confirmation")
-        await self.say(
-            f"Am I right with {speak_pin_digits(pin)}? "
-            "Press 1 or say yes, or no or press 2."
-        )
+        stats_update_call(self.call_uuid, pin_number=pin, status="pin_entered", notes="PIN entered; looking up results")
+
+        if self.call_uuid in active_calls:
+            active_calls[self.call_uuid]["pin"] = pin
+
+        await self.say("Finding tests.")
+        await self.read_results()
 
     async def confirm_no(self) -> None:
         logger.info("User said NO to PIN confirmation")
@@ -774,7 +779,12 @@ class VoiceFlow:
             logger.info(f"No results found for PIN {pin}")
             log_call_to_csv(self.caller_id, self.call_uuid, pin, "PIN Rejected", "No results found")
             stats_update_call(self.call_uuid, pin_number=pin, status="no_results", notes="No results found")
-            await self.retry_pin()
+
+            # A valid 6-digit PIN was understood, but it did not match any
+            # rows in the CSV. Do not say "I did not get that" here.
+            await self.say(f"No tests for PIN {speak_pin_digits(pin)}.")
+            self.confirmed_pin = ""
+            await self.prompt_for_pin()
             return
 
         self.is_reading_results = True
