@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "pizza_cases": 16,
+  "salad_cases": 9,
+  "beverage_cases": 4,
+  "coupon_cases": 21,
+  "coverage_expected": 37,
+  "coverage_tested": 37,
+  "exact_regression_passed": true,
+  "legacy_contract_detected": true
+}

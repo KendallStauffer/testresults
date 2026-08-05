@@ -1,0 +1,20 @@
+BASELINE
+- User-supplied folder: PMD_LiveMenuParity_TestFolder_2026-08-04
+- Existing main.py marker: 2026-08-04-live-menu-parity-test-folder-v1
+
+APPROVED SCOPE
+- Add one visible Run Full Compiler Test button to this exact tester main.py.
+- Add the compiler release-gate code beside main.py in the same test folder.
+- Add the one required httpx dependency and compiler-gate environment examples.
+
+PROTECTED UNCHANGED
+- Existing parity buttons, prompt scan, routes, test scripts, current_lab.js, and result files.
+- Production compiler and backend code.
+- Voximplant JavaScript, prompts, model, reasoning, VAD, payment, submission, transfer, pricing, and oneSystem writes.
+
+EXACT MAIN.PY CHANGE
+- Import register_compiler_gate_routes.
+- Register /compiler-gate routes after FastAPI app creation.
+- Add Run Full Compiler Test button.
+- Add runCompilerGate browser function.
+- Bump tester version marker to v2-compiler-gate.

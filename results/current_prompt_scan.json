@@ -1,0 +1,61 @@
+{
+  "ok": false,
+  "file": "/mnt/data/PMD_LiveMenuParity_TestFolder_2026-08-04/input/current_lab.js",
+  "payment_question_found": true,
+  "payment_question_line": 127,
+  "payment_nearby_lines": [
+    {
+      "line": 126,
+      "text": "\"PAYMENT AND SUBMIT\","
+    },
+    {
+      "line": 127,
+      "text": "\"- After the caller approves the final readback, ask exactly: Would you like to pay by card with me now, or pay at the store when you arrive?\","
+    },
+    {
+      "line": 128,
+      "text": "\"- Stop and wait. You decide the caller's natural-language payment choice. The newest completed correction wins; for example, card\u2014no, store means pay at store.\","
+    },
+    {
+      "line": 129,
+      "text": "\"- If the caller chooses pay at the store, say exactly: Submitting that now. Then call submit_order in the same response with payment_method pay_at_store.\","
+    },
+    {
+      "line": 130,
+      "text": "\"- If the caller chooses card, say exactly: Please enter the card number on your keypad. When you're done, say okay.\","
+    }
+  ],
+  "payment_stop_and_wait_leak_risk": true,
+  "all_stop_and_wait_occurrences": [
+    {
+      "line": 49,
+      "text": "\"- Ask only the next missing required choice. Ask one customer question, then stop and wait.\","
+    },
+    {
+      "line": 52,
+      "text": "\"- Stop and wait. A yes confirms only that item.\","
+    },
+    {
+      "line": 121,
+      "text": "\"- End the final readback exactly with: Is everything correct? Then stop and wait.\","
+    },
+    {
+      "line": 128,
+      "text": "\"- Stop and wait. You decide the caller's natural-language payment choice. The newest completed correction wins; for example, card\u2014no, store means pay at store.\","
+    },
+    {
+      "line": 141,
+      "text": "\"- If you are confused, stuck, or think staff may be better, ask exactly: Would you like me to transfer you to a member of our team? Then stop and wait.\","
+    },
+    {
+      "line": 781,
+      "text": "\"Stop and wait. After the caller approves, ask the exact payment-choice question from the main instructions. Do not submit yet.\""
+    },
+    {
+      "line": 2560,
+      "text": "next_step: \"Ask exactly: Would you like me to transfer you to a member of our team? Then stop and wait for a clear yes. Do not call transfer_call in this response.\""
+    }
+  ],
+  "force_message_stop_and_wait_risks": [],
+  "note": "This is a static prompt-contract check. It does not replace a live phone call. It fails when the exact payment question is adjacent to literal 'Stop and wait' text, the pattern spoken in call 7333101092."
+}

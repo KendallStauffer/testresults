@@ -1,0 +1,27 @@
+PMD LIVE MENU PARITY TESTER + COMPILER GATE VALIDATION
+Date: 2026-08-04
+
+PASSED
+- main.py is present at the root of the supplied test folder.
+- Python syntax compilation passed for:
+  - main.py
+  - compiler_gate_routes.py
+  - pmd_compiler_release_gate.py
+  - selftest_release_gate.py
+  - live_menu_parity_test.py
+  - prompt_leak_test.py
+- Compiler release-gate offline self-test passed.
+- Existing root page returned HTTP 200.
+- Existing root page contains Run Full Compiler Test.
+- /compiler-gate returned HTTP 200.
+- /compiler-gate/health returned HTTP 200.
+- Existing tester files and buttons were retained.
+
+EXPECTED LOCAL HEALTH DETAIL
+- compiler-gate health reports backend_key_present=false in this validation environment because no production backend key was supplied here.
+- After deployment with PMD_BACKEND_API_KEY configured, compiler-gate health should report backend_key_present=true.
+
+NOT CHANGED OR RUN
+- Production compiler/backend code was not edited.
+- No pricing, submission, payment, transfer, or oneSystem write was called.
+- Live exhaustive compiler gate was not run because the backend key was unavailable in this environment.

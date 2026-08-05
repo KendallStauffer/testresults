@@ -1,0 +1,35 @@
+--- /mnt/data/pmd_parity_extract/PMD_LiveMenuParity_TestFolder_2026-08-04/main.py	2026-08-04 18:26:55.000000000 +0000
++++ /mnt/data/PMD_LiveMenuParity_CompilerGate_TestFolder_2026-08-04/main.py	2026-08-05 00:28:36.684110364 +0000
+@@ -12,12 +12,15 @@
+ from fastapi import FastAPI, HTTPException, Query
+ from fastapi.responses import HTMLResponse
+ 
+-VERSION = "2026-08-04-live-menu-parity-test-folder-v1"
++from compiler_gate_routes import register_compiler_gate_routes
++
++VERSION = "2026-08-04-live-menu-parity-test-folder-v2-compiler-gate"
+ HERE = Path(__file__).resolve().parent
+ RESULTS = HERE / "results"
+ RESULTS.mkdir(exist_ok=True)
+ 
+ app = FastAPI(title="PMD Live Menu / Compiler Parity Tester", version=VERSION)
++register_compiler_gate_routes(app)
+ 
+ 
+ def _check_token(token: str | None) -> None:
+@@ -154,6 +157,7 @@
+ <button onclick="runParity(1,'P',true)">Store 1 Pickup Structural Only</button>
+ <button onclick="runParity(21,'P',true)">Store 21 Pickup Structural Only</button>
+ <button class='primary' onclick="runPrompt()">Run Stop-and-Wait Prompt Scan</button>
++<button class='primary' onclick="runCompilerGate()">Run Full Compiler Test</button>
+ <button onclick="health()">Health</button>
+ </p>
+ <div id='status' class='muted'>Ready.</div><pre id='out'></pre>
+@@ -163,6 +167,7 @@
+ async function call(url){document.getElementById('status').textContent='Running...'; const r=await fetch(url); let x; try{x=await r.json()}catch(e){x={ok:false,http:r.status,text:await r.text()}} show(x); document.getElementById('status').textContent=x.ok?'PASS':'FAIL';}
+ function runParity(store,ot,skip){let u=`/run-parity?store_number=${store}&order_type=${ot}&skip_round_trips=${skip}&token=${encodeURIComponent(token())}`;call(u)}
+ function runPrompt(){call(`/run-prompt-scan?token=${encodeURIComponent(token())}`)}
++function runCompilerGate(){window.location.href=`/compiler-gate?token=${encodeURIComponent(token())}`}
+ function health(){call('/health')}
+ </script></body></html>"""
+ 
