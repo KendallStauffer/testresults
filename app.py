@@ -1,5 +1,6 @@
 from flask import Flask, request, Response, render_template_string, send_file, jsonify
 from flask_sock import Sock
+from andromeda_routes import andromeda_bp
 import pandas as pd
 import os
 import logging
@@ -28,6 +29,7 @@ except Exception:  # pragma: no cover
 
 app = Flask(__name__)
 sock = Sock(app)
+app.register_blueprint(andromeda_bp)
 
 # ====================== CONFIG ======================
 UPLOAD_PASSWORD = "ForUSDA!2026"
