@@ -9,6 +9,7 @@ Routes:
     POST /andromeda/tickets
     POST /andromeda/calendar/availability
     POST /andromeda/calendar/book
+    POST /andromeda/lab/email
     GET  /andromeda/health
 """
 
@@ -18,6 +19,7 @@ import base64
 import hmac
 import json
 import os
+import re
 import smtplib
 import ssl
 import uuid
@@ -393,7 +395,6 @@ def calendar_book():
             "conferenceData": {
                 "createRequest": {
                     "requestId": "andromeda-" + uuid.uuid4().hex,
-                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
                 }
             },
         }
@@ -427,6 +428,30 @@ def calendar_book():
         )
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 502
+
+
+EMAIL_RE = re.compile(
+    r"^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+$",
+    re.I,
+)
+
+
+@andromeda_bp.post("/lab/email")
+def lab_capture_email():
+    """Email-only voice lab endpoint. Validates the caller-confirmed address.
+
+    This endpoint deliberately does not send SMS and does not modify Calendar.
+    """
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    data = _json_body()
+    email = _clean(data.get("email"), 320).lower()
+    if not EMAIL_RE.fullmatch(email):
+        return jsonify({"ok": False, "error": "Email address did not validate."}), 400
+
+    return jsonify({"ok": True, "email": email, "captured": True})
 
 
 @andromeda_bp.get("/health")
