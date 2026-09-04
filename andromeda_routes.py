@@ -6,6 +6,7 @@ Register with:
 
 Routes:
     POST /andromeda/email
+    POST /andromeda/tickets
     POST /andromeda/calendar/availability
     POST /andromeda/calendar/book
     GET  /andromeda/health
@@ -19,25 +20,17 @@ import json
 import os
 import smtplib
 import ssl
+import uuid
 from datetime import datetime, timedelta, time
 from email.message import EmailMessage
 from email.utils import formataddr
 from zoneinfo import ZoneInfo
 
 from flask import Blueprint, jsonify, request
-
-try:
-    from google.auth.transport.requests import Request as GoogleAuthRequest
-    from google.oauth2 import service_account
-    from google.oauth2.credentials import Credentials
-    from googleapiclient.discovery import build
-    GOOGLE_CALENDAR_LIBS_AVAILABLE = True
-except Exception:
-    GoogleAuthRequest = None
-    service_account = None
-    Credentials = None
-    build = None
-    GOOGLE_CALENDAR_LIBS_AVAILABLE = False
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
 andromeda_bp = Blueprint("andromeda", __name__, url_prefix="/andromeda")
 
@@ -103,11 +96,6 @@ def _slot_allowed(start: datetime) -> bool:
 
 
 def _calendar_credentials():
-    if not GOOGLE_CALENDAR_LIBS_AVAILABLE:
-        raise RuntimeError(
-            "Google Calendar libraries are not installed. Add google-api-python-client and google-auth to requirements.txt."
-        )
-
     raw_b64 = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "").strip()
     raw_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
     if raw_b64:
@@ -178,7 +166,7 @@ def _available_slots_for_day(service, day, now: datetime):
 
 def _smtp_configured() -> bool:
     return bool(
-        os.getenv("ANDROMEDA_SMTP_USER", "ken@ksac.com").strip()
+        os.getenv("ANDROMEDA_SMTP_USER", "").strip()
         and os.getenv("ANDROMEDA_SMTP_APP_PASSWORD", "").strip()
     )
 
@@ -186,7 +174,7 @@ def _smtp_configured() -> bool:
 def _send_email(to_address: str, subject: str, body: str):
     host = os.getenv("ANDROMEDA_SMTP_HOST", "smtp.gmail.com").strip()
     port = int(os.getenv("ANDROMEDA_SMTP_PORT", "465"))
-    user = os.getenv("ANDROMEDA_SMTP_USER", "ken@ksac.com").strip()
+    user = os.getenv("ANDROMEDA_SMTP_USER", "").strip()
     password = os.getenv("ANDROMEDA_SMTP_APP_PASSWORD", "").strip()
     from_email = os.getenv("ANDROMEDA_FROM_EMAIL", user).strip() or user
     from_name = os.getenv("ANDROMEDA_FROM_NAME", "Andromeda - Apex Voice").strip()
@@ -214,14 +202,15 @@ def send_call_info():
     data = _json_body()
     caller_name = _clean(data.get("caller_name"), 120) or "Unknown caller"
     caller_phone = _clean(data.get("caller_phone"), 60) or "Unavailable"
-    company = _clean(data.get("company"), 160) or "Not provided"
+    company = _clean(data.get("company"), 160)
     category = _clean(data.get("category"), 40).lower() or "other"
+    purpose = _clean(data.get("purpose"), 500)
     summary = _clean(data.get("summary"), 1800)
     urgency = _clean(data.get("urgency"), 20).lower() or "normal"
     recipient = _clean(data.get("recipient"), 20).lower() or "ken"
     disposition = _clean(data.get("disposition"), 200) or "Follow-up requested"
 
-    allowed_categories = {"support", "sales", "vendor", "billing", "new_customer", "other"}
+    allowed_categories = {"support", "sales", "personal", "other"}
     if category not in allowed_categories:
         category = "other"
     if urgency not in {"normal", "urgent"}:
@@ -237,52 +226,37 @@ def send_call_info():
         else os.getenv("ANDROMEDA_SANDY_EMAIL", "sandy@ksac.com").strip()
     )
 
-    labels = {
-        "support": "SUPPORT",
-        "sales": "SALES LEAD",
-        "vendor": "VENDOR CALL",
-        "billing": "BILLING",
-        "new_customer": "NEW CUSTOMER SERVICE REQUEST",
-        "other": "CALL FOLLOW-UP",
-    }
-    subject = f"{labels[category]} - {company} - {caller_name}"
+    labels = {"support": "Support", "sales": "Sales", "personal": "Personal", "other": "Other"}
+    subject_parts = [labels[category]]
+    if company:
+        subject_parts.append(company)
+    subject_parts.append(caller_name)
+    subject = " - ".join(subject_parts)
     if urgency == "urgent":
         subject = "URGENT - " + subject
 
     now = datetime.now(TZ)
-    body = "\n".join(
-        [
-            "Andromeda call follow-up",
-            "",
-            f"Caller: {caller_name}",
-            f"Company: {company}",
-            f"Callback number: {caller_phone}",
-            f"Category: {labels[category]}",
-            f"Urgency: {urgency.upper()}",
-            f"Disposition: {disposition}",
-            "",
-            "Summary:",
-            summary,
-            "",
-            f"Received: {now.strftime('%A, %B %d, %Y at %-I:%M %p')} Eastern",
-            "Source: Andromeda / Apex Voice",
-        ]
-    )
-
+    body_lines = [
+        "Andromeda call follow-up", "",
+        f"Caller: {caller_name}",
+        f"Company: {company or 'Not provided'}",
+        f"Callback number: {caller_phone}",
+        f"Category: {labels[category]}",
+    ]
+    if purpose:
+        body_lines.append(f"Purpose: {purpose}")
+    body_lines += [
+        f"Urgency: {urgency.upper()}",
+        f"Disposition: {disposition}", "", "Summary:", summary, "",
+        f"Received: {now.strftime('%A, %B %d, %Y at %-I:%M %p')} Eastern",
+        "Source: Andromeda / Apex Voice",
+    ]
     try:
-        _send_email(to_address, subject, body)
+        _send_email(to_address, subject, "\n".join(body_lines))
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 502
+    return jsonify({"ok": True, "sent": True, "recipient": recipient, "to": to_address, "subject": subject})
 
-    return jsonify(
-        {
-            "ok": True,
-            "sent": True,
-            "recipient": recipient,
-            "to": to_address,
-            "subject": subject,
-        }
-    )
 
 
 @andromeda_bp.post("/calendar/availability")
@@ -416,12 +390,27 @@ def calendar_book():
             "description": "\n".join(description_lines),
             "start": {"dateTime": start.isoformat(), "timeZone": TZ_NAME},
             "end": {"dateTime": end.isoformat(), "timeZone": TZ_NAME},
+            "conferenceData": {
+                "createRequest": {
+                    "requestId": "andromeda-" + uuid.uuid4().hex,
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                }
+            },
         }
         event = service.events().insert(
             calendarId=CALENDAR_ID,
             body=event_body,
             sendUpdates="none",
+            conferenceDataVersion=1,
         ).execute()
+
+        meet_url = _clean(event.get("hangoutLink"), 500)
+        if not meet_url:
+            conference_data = event.get("conferenceData") or {}
+            for entry in conference_data.get("entryPoints") or []:
+                if str(entry.get("entryPointType") or "").lower() == "video" and entry.get("uri"):
+                    meet_url = _clean(entry.get("uri"), 500)
+                    break
 
         return jsonify(
             {
@@ -433,6 +422,7 @@ def calendar_book():
                 "end": end.isoformat(),
                 "appointment_minutes": APPOINTMENT_MINUTES,
                 "purpose": purpose,
+                "meet_url": meet_url,
             }
         )
     except Exception as exc:
