@@ -8,6 +8,7 @@ Routes:
     POST /andromeda/email
     POST /andromeda/calendar/availability
     POST /andromeda/calendar/book
+    POST /andromeda/lab/email
     GET  /andromeda/health
 """
 
@@ -17,6 +18,7 @@ import base64
 import hmac
 import json
 import os
+import re
 import smtplib
 import ssl
 from datetime import datetime, timedelta, time
@@ -638,6 +640,27 @@ def sms_appointment():
         return jsonify({"ok": True, "sent": True, "to": _normalize_sms_phone(phone_number), "event_id": event_id, "meet_url": meet_url, "message_sid": twilio_result.get("sid", ""), "message_status": twilio_result.get("status", "")})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 502
+
+
+EMAIL_RE = re.compile(
+    r"^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+$",
+    re.I,
+)
+
+
+@andromeda_bp.post("/lab/email")
+def lab_capture_email():
+    """Validate the caller-confirmed appointment email and return JSON."""
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    data = _json_body()
+    email = _clean(data.get("email"), 320).lower()
+    if not EMAIL_RE.fullmatch(email):
+        return jsonify({"ok": False, "error": "Email address did not validate."}), 400
+
+    return jsonify({"ok": True, "email": email, "captured": True})
 
 
 @andromeda_bp.get("/health")
