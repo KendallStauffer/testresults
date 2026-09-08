@@ -6,10 +6,12 @@ Register with:
 
 Routes:
     POST /andromeda/email
-    POST /andromeda/tickets
     POST /andromeda/calendar/availability
     POST /andromeda/calendar/book
-    POST /andromeda/lab/email
+    POST /andromeda/calendar/find
+    POST /andromeda/calendar/cancel
+    POST /andromeda/calendar/reschedule
+    POST /andromeda/sms/appointment
     GET  /andromeda/health
 """
 
@@ -19,10 +21,12 @@ import base64
 import hmac
 import json
 import os
-import re
 import smtplib
 import ssl
+import time as time_module
 import uuid
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, time
 from email.message import EmailMessage
 from email.utils import formataddr
@@ -166,6 +170,163 @@ def _available_slots_for_day(service, day, now: datetime):
     return slots
 
 
+def _normalize_email(value: str) -> str:
+    return _clean(value, 320).lower()
+
+
+def _normalize_phone(value: str) -> str:
+    raw = _clean(value, 80)
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if len(digits) == 10:
+        digits = "1" + digits
+    if len(digits) != 11 or not digits.startswith("1"):
+        raise ValueError("Phone number must be a valid US/Canada number.")
+    return "+" + digits
+
+
+def _event_meet_url(event: dict) -> str:
+    direct = _clean(event.get("hangoutLink"), 500)
+    if direct:
+        return direct
+    conference = event.get("conferenceData") or {}
+    for entry in conference.get("entryPoints") or []:
+        if entry.get("entryPointType") == "video" and entry.get("uri"):
+            return _clean(entry.get("uri"), 500)
+    return ""
+
+
+def _event_private(event: dict) -> dict:
+    return ((event.get("extendedProperties") or {}).get("private") or {})
+
+
+def _event_snapshot(event: dict) -> dict:
+    private = _event_private(event)
+    attendees = event.get("attendees") or []
+    attendee_email = ""
+    for attendee in attendees:
+        address = _normalize_email(attendee.get("email"))
+        if address and address != _normalize_email(CALENDAR_ID):
+            attendee_email = address
+            break
+    start_raw = ((event.get("start") or {}).get("dateTime") or "")
+    end_raw = ((event.get("end") or {}).get("dateTime") or "")
+    return {
+        "event_id": event.get("id", ""),
+        "summary": event.get("summary", ""),
+        "start": _parse_local(start_raw).isoformat() if start_raw else "",
+        "end": _parse_local(end_raw).isoformat() if end_raw else "",
+        "caller_name": private.get("caller_name", ""),
+        "company": private.get("company", ""),
+        "email": private.get("caller_email", "") or attendee_email,
+        "phone": private.get("caller_phone", ""),
+        "purpose": private.get("purpose", ""),
+        "meet_url": _event_meet_url(event),
+    }
+
+
+def _find_andromeda_events(service, caller_name="", email="", appointment_date="", caller_phone=""):
+    now = datetime.now(TZ)
+    time_min = (now - timedelta(days=30)).isoformat()
+    time_max = (now + timedelta(days=180)).isoformat()
+    result = service.events().list(
+        calendarId=CALENDAR_ID,
+        timeMin=time_min,
+        timeMax=time_max,
+        singleEvents=True,
+        orderBy="startTime",
+        maxResults=250,
+    ).execute()
+    wanted_name = _clean(caller_name, 120).lower()
+    wanted_email = _normalize_email(email)
+    wanted_phone = ""
+    if caller_phone:
+        try:
+            wanted_phone = _normalize_phone(caller_phone)
+        except Exception:
+            wanted_phone = ""
+    matches = []
+    for event in result.get("items") or []:
+        private = _event_private(event)
+        if private.get("andromeda") != "1" and not str(event.get("summary") or "").startswith("Andromeda Appointment -"):
+            continue
+        snap = _event_snapshot(event)
+        if appointment_date and snap["start"][:10] != appointment_date:
+            continue
+        if wanted_name:
+            hay = (snap["caller_name"] + " " + snap["summary"]).lower()
+            if wanted_name not in hay:
+                continue
+        if wanted_email and wanted_email != _normalize_email(snap["email"]):
+            continue
+        if wanted_phone:
+            try:
+                if wanted_phone != _normalize_phone(snap["phone"]):
+                    continue
+            except Exception:
+                continue
+        matches.append(snap)
+    return matches[:10]
+
+
+def _event_conflicts(service, start: datetime, end: datetime, ignore_event_id: str = "") -> bool:
+    result = service.events().list(
+        calendarId=CALENDAR_ID,
+        timeMin=start.isoformat(),
+        timeMax=end.isoformat(),
+        singleEvents=True,
+        orderBy="startTime",
+        maxResults=50,
+    ).execute()
+    for event in result.get("items") or []:
+        if ignore_event_id and event.get("id") == ignore_event_id:
+            continue
+        if event.get("status") == "cancelled":
+            continue
+        ev_start = ((event.get("start") or {}).get("dateTime") or "")
+        ev_end = ((event.get("end") or {}).get("dateTime") or "")
+        if not ev_start or not ev_end:
+            continue
+        if start < _parse_local(ev_end) and end > _parse_local(ev_start):
+            return True
+    return False
+
+
+def _twilio_configured() -> bool:
+    return bool(
+        os.getenv("TWILIO_ACCOUNT_SID", "").strip()
+        and os.getenv("TWILIO_AUTH_TOKEN", "").strip()
+        and (
+            os.getenv("TWILIO_MESSAGING_SERVICE_SID", "").strip()
+            or os.getenv("TWILIO_FROM_NUMBER", "").strip()
+            or os.getenv("TWILIO_NUMBER", "").strip()
+        )
+    )
+
+
+def _send_twilio_sms(to_number: str, body: str) -> dict:
+    sid = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
+    token = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
+    messaging_service_sid = os.getenv("TWILIO_MESSAGING_SERVICE_SID", "").strip()
+    from_number = (os.getenv("TWILIO_FROM_NUMBER", "").strip() or os.getenv("TWILIO_NUMBER", "").strip())
+    if not sid or not token or (not messaging_service_sid and not from_number):
+        raise RuntimeError("Twilio SMS is not configured.")
+    payload = {"To": _normalize_phone(to_number), "Body": body}
+    if messaging_service_sid:
+        payload["MessagingServiceSid"] = messaging_service_sid
+    else:
+        payload["From"] = _normalize_phone(from_number)
+    data = urllib.parse.urlencode(payload).encode("utf-8")
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
+    request_obj = urllib.request.Request(url, data=data, method="POST")
+    auth = base64.b64encode(f"{sid}:{token}".encode("utf-8")).decode("ascii")
+    request_obj.add_header("Authorization", "Basic " + auth)
+    request_obj.add_header("Content-Type", "application/x-www-form-urlencoded")
+    with urllib.request.urlopen(request_obj, timeout=15) as response:
+        raw = response.read().decode("utf-8")
+    parsed = json.loads(raw)
+    return {"sid": parsed.get("sid", ""), "status": parsed.get("status", "")}
+
+
 def _smtp_configured() -> bool:
     return bool(
         os.getenv("ANDROMEDA_SMTP_USER", "").strip()
@@ -204,15 +365,14 @@ def send_call_info():
     data = _json_body()
     caller_name = _clean(data.get("caller_name"), 120) or "Unknown caller"
     caller_phone = _clean(data.get("caller_phone"), 60) or "Unavailable"
-    company = _clean(data.get("company"), 160)
+    company = _clean(data.get("company"), 160) or "Not provided"
     category = _clean(data.get("category"), 40).lower() or "other"
-    purpose = _clean(data.get("purpose"), 500)
     summary = _clean(data.get("summary"), 1800)
     urgency = _clean(data.get("urgency"), 20).lower() or "normal"
     recipient = _clean(data.get("recipient"), 20).lower() or "ken"
     disposition = _clean(data.get("disposition"), 200) or "Follow-up requested"
 
-    allowed_categories = {"support", "sales", "personal", "other"}
+    allowed_categories = {"support", "sales", "vendor", "billing", "new_customer", "other"}
     if category not in allowed_categories:
         category = "other"
     if urgency not in {"normal", "urgent"}:
@@ -228,37 +388,52 @@ def send_call_info():
         else os.getenv("ANDROMEDA_SANDY_EMAIL", "sandy@ksac.com").strip()
     )
 
-    labels = {"support": "Support", "sales": "Sales", "personal": "Personal", "other": "Other"}
-    subject_parts = [labels[category]]
-    if company:
-        subject_parts.append(company)
-    subject_parts.append(caller_name)
-    subject = " - ".join(subject_parts)
+    labels = {
+        "support": "SUPPORT",
+        "sales": "SALES LEAD",
+        "vendor": "VENDOR CALL",
+        "billing": "BILLING",
+        "new_customer": "NEW CUSTOMER SERVICE REQUEST",
+        "other": "CALL FOLLOW-UP",
+    }
+    subject = f"{labels[category]} - {company} - {caller_name}"
     if urgency == "urgent":
         subject = "URGENT - " + subject
 
     now = datetime.now(TZ)
-    body_lines = [
-        "Andromeda call follow-up", "",
-        f"Caller: {caller_name}",
-        f"Company: {company or 'Not provided'}",
-        f"Callback number: {caller_phone}",
-        f"Category: {labels[category]}",
-    ]
-    if purpose:
-        body_lines.append(f"Purpose: {purpose}")
-    body_lines += [
-        f"Urgency: {urgency.upper()}",
-        f"Disposition: {disposition}", "", "Summary:", summary, "",
-        f"Received: {now.strftime('%A, %B %d, %Y at %-I:%M %p')} Eastern",
-        "Source: Andromeda / Apex Voice",
-    ]
+    body = "\n".join(
+        [
+            "Andromeda call follow-up",
+            "",
+            f"Caller: {caller_name}",
+            f"Company: {company}",
+            f"Callback number: {caller_phone}",
+            f"Category: {labels[category]}",
+            f"Urgency: {urgency.upper()}",
+            f"Disposition: {disposition}",
+            "",
+            "Summary:",
+            summary,
+            "",
+            f"Received: {now.strftime('%A, %B %d, %Y at %-I:%M %p')} Eastern",
+            "Source: Andromeda / Apex Voice",
+        ]
+    )
+
     try:
-        _send_email(to_address, subject, "\n".join(body_lines))
+        _send_email(to_address, subject, body)
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 502
-    return jsonify({"ok": True, "sent": True, "recipient": recipient, "to": to_address, "subject": subject})
 
+    return jsonify(
+        {
+            "ok": True,
+            "sent": True,
+            "recipient": recipient,
+            "to": to_address,
+            "subject": subject,
+        }
+    )
 
 
 @andromeda_bp.post("/calendar/availability")
@@ -349,109 +524,211 @@ def calendar_book():
     caller_name = _clean(data.get("caller_name"), 120)
     caller_phone = _clean(data.get("caller_phone"), 60)
     company = _clean(data.get("company"), 160)
-    email = _clean(data.get("email"), 200)
+    email = _normalize_email(data.get("email"))
     purpose = _clean(data.get("purpose"), 500)
 
-    if not start_value or not caller_name or not purpose:
-        return jsonify({"ok": False, "error": "start_time, caller_name, and purpose are required."}), 400
+    if not start_value or not caller_name or not company or not purpose:
+        return jsonify({"ok": False, "error": "start_time, caller_name, company, and purpose are required."}), 400
 
     try:
         start = _parse_local(start_value)
         end = start + timedelta(minutes=APPOINTMENT_MINUTES)
         now = datetime.now(TZ)
         if start <= now or not _slot_allowed(start):
-            return jsonify(
-                {
-                    "ok": False,
-                    "error": "Appointment must be a future 30-minute slot Monday-Friday between 1:00 PM and 3:00 PM Eastern.",
-                }
-            ), 400
+            return jsonify({"ok": False, "error": "Appointment must be a future 30-minute slot Monday-Friday between 1:00 PM and 3:00 PM Eastern."}), 400
 
         service = _calendar_service()
-        window_start, window_end = _appointment_window(start.date())
-        busy = _busy_for(service, window_start, window_end)
-        if _overlaps(start, end, busy):
+        if _event_conflicts(service, start, end):
             return jsonify({"ok": False, "error": "That time is no longer available. Check availability again."}), 409
 
-        title = f"Andromeda Appointment - {caller_name}"
-        if company:
-            title += f" - {company}"
+        title = f"Andromeda Appointment - {caller_name} - {company}"
         description_lines = [
             f"Purpose: {purpose}",
             f"Caller: {caller_name}",
+            f"Company: {company}",
             f"Phone: {caller_phone or 'not available'}",
         ]
-        if company:
-            description_lines.append(f"Company: {company}")
         if email:
             description_lines.append(f"Caller email: {email}")
         description_lines.append("Booked by Andromeda / Apex Voice")
 
         event_body = {
             "summary": title,
-            "description": "\n".join(description_lines),
+            "description": "\
+".join(description_lines),
             "start": {"dateTime": start.isoformat(), "timeZone": TZ_NAME},
             "end": {"dateTime": end.isoformat(), "timeZone": TZ_NAME},
-            "conferenceData": {
-                "createRequest": {
-                    "requestId": "andromeda-" + uuid.uuid4().hex,
+            "extendedProperties": {
+                "private": {
+                    "andromeda": "1",
+                    "caller_name": caller_name,
+                    "company": company,
+                    "caller_email": email,
+                    "caller_phone": caller_phone,
+                    "purpose": purpose,
                 }
             },
         }
-        event = service.events().insert(
-            calendarId=CALENDAR_ID,
-            body=event_body,
-            sendUpdates="none",
-            conferenceDataVersion=1,
-        ).execute()
+        if email:
+            event_body["attendees"] = [{"email": email}]
 
-        meet_url = _clean(event.get("hangoutLink"), 500)
-        if not meet_url:
-            conference_data = event.get("conferenceData") or {}
-            for entry in conference_data.get("entryPoints") or []:
-                if str(entry.get("entryPointType") or "").lower() == "video" and entry.get("uri"):
-                    meet_url = _clean(entry.get("uri"), 500)
+        calendar_info = service.calendars().get(calendarId=CALENDAR_ID).execute()
+        allowed_conferences = ((calendar_info.get("conferenceProperties") or {}).get("allowedConferenceSolutionTypes") or [])
+        wants_meet = "hangoutsMeet" in allowed_conferences
+        if wants_meet:
+            event_body["conferenceData"] = {"createRequest": {"requestId": "andromeda-" + uuid.uuid4().hex}}
+
+        insert_kwargs = {
+            "calendarId": CALENDAR_ID,
+            "body": event_body,
+            "sendUpdates": "all" if email else "none",
+        }
+        if wants_meet:
+            insert_kwargs["conferenceDataVersion"] = 1
+        event = service.events().insert(**insert_kwargs).execute()
+
+        # Meet generation can be asynchronous. Re-read briefly so the caller/SMS path gets the link when possible.
+        if wants_meet and not _event_meet_url(event):
+            event_id = event.get("id", "")
+            for _ in range(4):
+                time_module.sleep(0.35)
+                event = service.events().get(calendarId=CALENDAR_ID, eventId=event_id).execute()
+                if _event_meet_url(event):
                     break
 
-        return jsonify(
-            {
-                "ok": True,
-                "booked": True,
-                "event_id": event.get("id", ""),
-                "calendar_id": CALENDAR_ID,
-                "start": start.isoformat(),
-                "end": end.isoformat(),
-                "appointment_minutes": APPOINTMENT_MINUTES,
-                "purpose": purpose,
-                "meet_url": meet_url,
-            }
-        )
+        return jsonify({
+            "ok": True,
+            "booked": True,
+            "event_id": event.get("id", ""),
+            "calendar_id": CALENDAR_ID,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "appointment_minutes": APPOINTMENT_MINUTES,
+            "purpose": purpose,
+            "company": company,
+            "email": email,
+            "meet_url": _event_meet_url(event),
+            "calendar_url": event.get("htmlLink", ""),
+            "invite_sent": bool(email),
+        })
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 502
 
 
-EMAIL_RE = re.compile(
-    r"^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+$",
-    re.I,
-)
-
-
-@andromeda_bp.post("/lab/email")
-def lab_capture_email():
-    """Email-only voice lab endpoint. Validates the caller-confirmed address.
-
-    This endpoint deliberately does not send SMS and does not modify Calendar.
-    """
+@andromeda_bp.post("/calendar/find")
+def calendar_find():
     auth_error = _require_auth()
     if auth_error:
         return auth_error
-
     data = _json_body()
-    email = _clean(data.get("email"), 320).lower()
-    if not EMAIL_RE.fullmatch(email):
-        return jsonify({"ok": False, "error": "Email address did not validate."}), 400
+    caller_name = _clean(data.get("caller_name"), 120)
+    email = _normalize_email(data.get("email"))
+    appointment_date = _clean(data.get("appointment_date"), 20)
+    caller_phone = _clean(data.get("caller_phone"), 60)
+    if not caller_name and not email and not appointment_date and not caller_phone:
+        return jsonify({"ok": False, "error": "Provide at least one appointment identifier."}), 400
+    try:
+        service = _calendar_service()
+        matches = _find_andromeda_events(service, caller_name, email, appointment_date, caller_phone)
+        return jsonify({"ok": True, "count": len(matches), "appointments": matches})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
 
-    return jsonify({"ok": True, "email": email, "captured": True})
+
+@andromeda_bp.post("/calendar/cancel")
+def calendar_cancel():
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+    event_id = _clean(_json_body().get("event_id"), 200)
+    if not event_id:
+        return jsonify({"ok": False, "error": "event_id is required."}), 400
+    try:
+        service = _calendar_service()
+        event = service.events().get(calendarId=CALENDAR_ID, eventId=event_id).execute()
+        snap = _event_snapshot(event)
+        service.events().delete(calendarId=CALENDAR_ID, eventId=event_id, sendUpdates="all").execute()
+        return jsonify({"ok": True, "cancelled": True, "appointment": snap})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+
+
+@andromeda_bp.post("/calendar/reschedule")
+def calendar_reschedule():
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+    data = _json_body()
+    event_id = _clean(data.get("event_id"), 200)
+    new_start_value = _clean(data.get("new_start_time"), 100)
+    if not event_id or not new_start_value:
+        return jsonify({"ok": False, "error": "event_id and new_start_time are required."}), 400
+    try:
+        new_start = _parse_local(new_start_value)
+        new_end = new_start + timedelta(minutes=APPOINTMENT_MINUTES)
+        if new_start <= datetime.now(TZ) or not _slot_allowed(new_start):
+            return jsonify({"ok": False, "error": "New appointment time must be a future allowed 30-minute slot."}), 400
+        service = _calendar_service()
+        event = service.events().get(calendarId=CALENDAR_ID, eventId=event_id).execute()
+        if _event_conflicts(service, new_start, new_end, ignore_event_id=event_id):
+            return jsonify({"ok": False, "error": "That new time is no longer available."}), 409
+        event["start"] = {"dateTime": new_start.isoformat(), "timeZone": TZ_NAME}
+        event["end"] = {"dateTime": new_end.isoformat(), "timeZone": TZ_NAME}
+        updated = service.events().update(
+            calendarId=CALENDAR_ID,
+            eventId=event_id,
+            body=event,
+            sendUpdates="all",
+            conferenceDataVersion=1,
+        ).execute()
+        return jsonify({
+            "ok": True,
+            "rescheduled": True,
+            "event_id": event_id,
+            "start": new_start.isoformat(),
+            "end": new_end.isoformat(),
+            "meet_url": _event_meet_url(updated),
+            "appointment": _event_snapshot(updated),
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
+
+
+@andromeda_bp.post("/sms/appointment")
+def sms_appointment():
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+    data = _json_body()
+    event_id = _clean(data.get("event_id"), 200)
+    phone_number = _clean(data.get("phone_number"), 80)
+    if not event_id or not phone_number:
+        return jsonify({"ok": False, "error": "event_id and phone_number are required."}), 400
+    try:
+        service = _calendar_service()
+        event = service.events().get(calendarId=CALENDAR_ID, eventId=event_id).execute()
+        snap = _event_snapshot(event)
+        meet_url = snap.get("meet_url", "")
+        if not meet_url:
+            return jsonify({"ok": False, "error": "Google Meet link is not available for this appointment yet."}), 409
+        start = _parse_local(snap["start"])
+        body = (
+            "Affiliated Telecom appointment with Ken: "
+            + start.strftime("%A, %B %-d at %-I:%M %p Eastern")
+            + ". Google Meet: " + meet_url
+        )
+        twilio_result = _send_twilio_sms(phone_number, body)
+        return jsonify({
+            "ok": True,
+            "sent": True,
+            "to": _normalize_phone(phone_number),
+            "event_id": event_id,
+            "meet_url": meet_url,
+            "message_sid": twilio_result.get("sid", ""),
+            "message_status": twilio_result.get("status", ""),
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 502
 
 
 @andromeda_bp.get("/health")
@@ -476,6 +753,7 @@ def health():
             "calendar_id": CALENDAR_ID,
             "calendar_auth": calendar_auth,
             "smtp_configured": _smtp_configured(),
+            "twilio_sms_configured": _twilio_configured(),
             "appointment_window": "Monday-Friday, 1:00 PM-3:00 PM Eastern",
             "appointment_minutes": APPOINTMENT_MINUTES,
         }
