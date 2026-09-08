@@ -102,9 +102,10 @@ def _calendar_credentials():
         raw_json = base64.b64decode(raw_b64).decode("utf-8")
     if raw_json:
         info = json.loads(raw_json)
-        return service_account.Credentials.from_service_account_info(
+        creds = service_account.Credentials.from_service_account_info(
             info, scopes=[CALENDAR_SCOPE]
         )
+        return creds.with_subject(CALENDAR_ID)
 
     refresh_token = os.getenv("GOOGLE_REFRESH_TOKEN", "").strip()
     client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip()
