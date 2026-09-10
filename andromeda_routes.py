@@ -8,7 +8,6 @@ Routes:
     POST /andromeda/email
     POST /andromeda/calendar/availability
     POST /andromeda/calendar/book
-    POST /andromeda/lab/email
     GET  /andromeda/health
 """
 
@@ -18,7 +17,6 @@ import base64
 import hmac
 import json
 import os
-import re
 import smtplib
 import ssl
 from datetime import datetime, timedelta, time
@@ -88,11 +86,21 @@ def _appointment_window(day):
     )
 
 
-def _slot_allowed(start: datetime) -> bool:
+def _appointment_duration_minutes(value) -> int:
+    try:
+        minutes = int(value or APPOINTMENT_MINUTES)
+    except (TypeError, ValueError):
+        minutes = APPOINTMENT_MINUTES
+    if minutes not in (30, 60):
+        raise ValueError("Appointment duration must be 30 or 60 minutes.")
+    return minutes
+
+
+def _slot_allowed(start: datetime, duration_minutes: int = APPOINTMENT_MINUTES) -> bool:
     start = start.astimezone(TZ)
-    end = start + timedelta(minutes=APPOINTMENT_MINUTES)
+    end = start + timedelta(minutes=duration_minutes)
     window_start, window_end = _appointment_window(start.date())
-    return start.weekday() < 5 and start >= window_start and end <= window_end
+    return start.weekday() < 5 and start >= window_start and end <= window_end and start.minute in (0, 30)
 
 
 def _calendar_credentials():
@@ -102,10 +110,9 @@ def _calendar_credentials():
         raw_json = base64.b64decode(raw_b64).decode("utf-8")
     if raw_json:
         info = json.loads(raw_json)
-        creds = service_account.Credentials.from_service_account_info(
+        return service_account.Credentials.from_service_account_info(
             info, scopes=[CALENDAR_SCOPE]
         )
-        return creds.with_subject(CALENDAR_ID)
 
     refresh_token = os.getenv("GOOGLE_REFRESH_TOKEN", "").strip()
     client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip()
@@ -150,18 +157,19 @@ def _overlaps(start: datetime, end: datetime, busy) -> bool:
     return any(start < b_end and end > b_start for b_start, b_end in busy)
 
 
-def _available_slots_for_day(service, day, now: datetime):
+def _available_slots_for_day(service, day, now: datetime, duration_minutes: int = APPOINTMENT_MINUTES):
     if day.weekday() >= 5:
         return []
     window_start, window_end = _appointment_window(day)
     busy = _busy_for(service, window_start, window_end)
     slots = []
     cursor = window_start
-    duration = timedelta(minutes=APPOINTMENT_MINUTES)
+    step = timedelta(minutes=APPOINTMENT_MINUTES)
+    duration = timedelta(minutes=duration_minutes)
     while cursor + duration <= window_end:
         if cursor > now and not _overlaps(cursor, cursor + duration, busy):
-            slots.append({"start": cursor.isoformat(), "end": (cursor + duration).isoformat()})
-        cursor += duration
+            slots.append({"start": cursor.isoformat(), "end": (cursor + duration).isoformat(), "duration_minutes": duration_minutes})
+        cursor += step
     return slots
 
 
@@ -215,11 +223,12 @@ def _appointment_snapshot(event: dict) -> dict:
         "email": fields.get("caller email", "") or attendee_email,
         "phone": fields.get("phone", ""),
         "purpose": fields.get("purpose", ""),
+        "duration_minutes": int((_parse_local(end_raw) - _parse_local(start_raw)).total_seconds() // 60) if start_raw and end_raw else APPOINTMENT_MINUTES,
         "meet_url": _appointment_meet_url(event),
     }
 
 
-def _find_andromeda_appointments(service, caller_name="", email="", appointment_date=""):
+def _find_andromeda_appointments(service, caller_name="", email="", phone_number="", appointment_date=""):
     now = datetime.now(TZ)
     result = service.events().list(
         calendarId=CALENDAR_ID,
@@ -231,6 +240,9 @@ def _find_andromeda_appointments(service, caller_name="", email="", appointment_
     ).execute()
     wanted_name = _clean(caller_name, 120).lower()
     wanted_email = _normalize_appointment_email(email)
+    wanted_phone = "".join(ch for ch in _clean(phone_number, 80) if ch.isdigit())
+    if len(wanted_phone) == 11 and wanted_phone.startswith("1"):
+        wanted_phone = wanted_phone[1:]
     matches = []
     for event in result.get("items") or []:
         if not str(event.get("summary") or "").startswith("Andromeda Appointment -"):
@@ -242,6 +254,12 @@ def _find_andromeda_appointments(service, caller_name="", email="", appointment_
             continue
         if wanted_email and wanted_email != _normalize_appointment_email(snap["email"]):
             continue
+        if wanted_phone:
+            snap_phone = "".join(ch for ch in str(snap.get("phone") or "") if ch.isdigit())
+            if len(snap_phone) == 11 and snap_phone.startswith("1"):
+                snap_phone = snap_phone[1:]
+            if wanted_phone != snap_phone:
+                continue
         matches.append(snap)
     return matches[:10]
 
@@ -396,19 +414,21 @@ def calendar_availability():
     now = datetime.now(TZ)
 
     try:
+        duration_minutes = _appointment_duration_minutes(data.get("duration_minutes"))
         service = _calendar_service()
 
         if requested_start:
             start = _parse_local(requested_start)
-            end = start + timedelta(minutes=APPOINTMENT_MINUTES)
-            if not _slot_allowed(start) or start <= now:
+            end = start + timedelta(minutes=duration_minutes)
+            if not _slot_allowed(start, duration_minutes) or start <= now:
                 return jsonify(
                     {
                         "ok": True,
                         "requested_available": False,
                         "requested_start": start.isoformat(),
                         "reason": "outside_appointment_window_or_past",
-                        "appointment_window": "Monday-Friday, 1:00 PM-3:00 PM Eastern, 30-minute appointments",
+                        "appointment_window": "Monday-Friday, 1:00 PM-3:00 PM Eastern",
+                        "duration_minutes": duration_minutes,
                         "available_slots": [],
                     }
                 )
@@ -421,19 +441,20 @@ def calendar_availability():
                     "requested_available": available,
                     "requested_start": start.isoformat(),
                     "requested_end": end.isoformat(),
-                    "appointment_window": "Monday-Friday, 1:00 PM-3:00 PM Eastern, 30-minute appointments",
-                    "available_slots": [{"start": start.isoformat(), "end": end.isoformat()}] if available else [],
+                    "appointment_window": "Monday-Friday, 1:00 PM-3:00 PM Eastern",
+                    "duration_minutes": duration_minutes,
+                    "available_slots": [{"start": start.isoformat(), "end": end.isoformat(), "duration_minutes": duration_minutes}] if available else [],
                 }
             )
 
         if requested_date:
             day = datetime.fromisoformat(requested_date).date()
-            slots = _available_slots_for_day(service, day, now)
+            slots = _available_slots_for_day(service, day, now, duration_minutes)
             return jsonify(
                 {
                     "ok": True,
                     "timezone": TZ_NAME,
-                    "appointment_minutes": APPOINTMENT_MINUTES,
+                    "appointment_minutes": duration_minutes,
                     "appointment_window": "Monday-Friday, 1:00 PM-3:00 PM Eastern",
                     "requested_date": requested_date,
                     "available_slots": slots,
@@ -445,7 +466,7 @@ def calendar_availability():
         checked = 0
         while len(slots) < 8 and checked < 14:
             if day.weekday() < 5:
-                slots.extend(_available_slots_for_day(service, day, now))
+                slots.extend(_available_slots_for_day(service, day, now, duration_minutes))
             day += timedelta(days=1)
             checked += 1
         return jsonify(
@@ -479,14 +500,15 @@ def calendar_book():
         return jsonify({"ok": False, "error": "start_time, caller_name, and purpose are required."}), 400
 
     try:
+        duration_minutes = _appointment_duration_minutes(data.get("duration_minutes"))
         start = _parse_local(start_value)
-        end = start + timedelta(minutes=APPOINTMENT_MINUTES)
+        end = start + timedelta(minutes=duration_minutes)
         now = datetime.now(TZ)
-        if start <= now or not _slot_allowed(start):
+        if start <= now or not _slot_allowed(start, duration_minutes):
             return jsonify(
                 {
                     "ok": False,
-                    "error": "Appointment must be a future 30-minute slot Monday-Friday between 1:00 PM and 3:00 PM Eastern.",
+                    "error": "Appointment must be a future 30- or 60-minute slot fitting Monday-Friday between 1:00 PM and 3:00 PM Eastern.",
                 }
             ), 400
 
@@ -533,7 +555,7 @@ def calendar_book():
                 "calendar_id": CALENDAR_ID,
                 "start": start.isoformat(),
                 "end": end.isoformat(),
-                "appointment_minutes": APPOINTMENT_MINUTES,
+                "appointment_minutes": duration_minutes,
                 "purpose": purpose,
             }
         )
@@ -549,15 +571,29 @@ def calendar_find():
     data = _json_body()
     caller_name = _clean(data.get("caller_name"), 120)
     email = _normalize_appointment_email(data.get("email"))
+    phone_number = _clean(data.get("phone_number"), 80)
     appointment_date = _clean(data.get("appointment_date"), 20)
-    if not caller_name and not email and not appointment_date:
-        return jsonify({"ok": False, "error": "Provide at least one appointment identifier."}), 400
+    if not email and not phone_number:
+        return jsonify({"ok": False, "error": "For security, provide the email address or phone number associated with the appointment."}), 400
     try:
         service = _calendar_service()
-        matches = _find_andromeda_appointments(service, caller_name, email, appointment_date)
+        matches = _find_andromeda_appointments(service, caller_name, email, phone_number, appointment_date)
         return jsonify({"ok": True, "count": len(matches), "appointments": matches})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 502
+
+
+def _appointment_verification_matches(snapshot: dict, email="", phone_number="") -> bool:
+    wanted_email = _normalize_appointment_email(email)
+    if wanted_email and wanted_email == _normalize_appointment_email(snapshot.get("email")):
+        return True
+    wanted_phone = "".join(ch for ch in _clean(phone_number, 80) if ch.isdigit())
+    snap_phone = "".join(ch for ch in str(snapshot.get("phone") or "") if ch.isdigit())
+    if len(wanted_phone) == 11 and wanted_phone.startswith("1"):
+        wanted_phone = wanted_phone[1:]
+    if len(snap_phone) == 11 and snap_phone.startswith("1"):
+        snap_phone = snap_phone[1:]
+    return bool(wanted_phone and wanted_phone == snap_phone)
 
 
 @andromeda_bp.post("/calendar/cancel")
@@ -565,13 +601,18 @@ def calendar_cancel():
     auth_error = _require_auth()
     if auth_error:
         return auth_error
-    event_id = _clean(_json_body().get("event_id"), 200)
-    if not event_id:
-        return jsonify({"ok": False, "error": "event_id is required."}), 400
+    data = _json_body()
+    event_id = _clean(data.get("event_id"), 200)
+    email = _normalize_appointment_email(data.get("email"))
+    phone_number = _clean(data.get("phone_number"), 80)
+    if not event_id or (not email and not phone_number):
+        return jsonify({"ok": False, "error": "event_id plus the associated email or phone number are required."}), 400
     try:
         service = _calendar_service()
         event = service.events().get(calendarId=CALENDAR_ID, eventId=event_id).execute()
         snapshot = _appointment_snapshot(event)
+        if not _appointment_verification_matches(snapshot, email, phone_number):
+            return jsonify({"ok": False, "error": "Appointment verification did not match."}), 403
         service.events().delete(calendarId=CALENDAR_ID, eventId=event_id, sendUpdates="all").execute()
         return jsonify({"ok": True, "cancelled": True, "appointment": snapshot})
     except Exception as exc:
@@ -586,15 +627,21 @@ def calendar_reschedule():
     data = _json_body()
     event_id = _clean(data.get("event_id"), 200)
     new_start_value = _clean(data.get("new_start_time"), 100)
-    if not event_id or not new_start_value:
-        return jsonify({"ok": False, "error": "event_id and new_start_time are required."}), 400
+    email = _normalize_appointment_email(data.get("email"))
+    phone_number = _clean(data.get("phone_number"), 80)
+    if not event_id or not new_start_value or (not email and not phone_number):
+        return jsonify({"ok": False, "error": "event_id, new_start_time, and the associated email or phone number are required."}), 400
     try:
         new_start = _parse_local(new_start_value)
-        new_end = new_start + timedelta(minutes=APPOINTMENT_MINUTES)
-        if new_start <= datetime.now(TZ) or not _slot_allowed(new_start):
-            return jsonify({"ok": False, "error": "New appointment time must be a future allowed 30-minute slot."}), 400
         service = _calendar_service()
         current = service.events().get(calendarId=CALENDAR_ID, eventId=event_id).execute()
+        current_snapshot = _appointment_snapshot(current)
+        if not _appointment_verification_matches(current_snapshot, email, phone_number):
+            return jsonify({"ok": False, "error": "Appointment verification did not match."}), 403
+        duration_minutes = _appointment_duration_minutes(current_snapshot.get("duration_minutes"))
+        new_end = new_start + timedelta(minutes=duration_minutes)
+        if new_start <= datetime.now(TZ) or not _slot_allowed(new_start, duration_minutes):
+            return jsonify({"ok": False, "error": "New appointment time must fit the existing appointment duration within the allowed window."}), 400
         window_start, window_end = _appointment_window(new_start.date())
         busy = _busy_for(service, window_start, window_end)
         current_start_raw = ((current.get("start") or {}).get("dateTime") or "")
@@ -613,7 +660,7 @@ def calendar_reschedule():
             body=current,
             sendUpdates="all",
         ).execute()
-        return jsonify({"ok": True, "rescheduled": True, "event_id": event_id, "start": new_start.isoformat(), "end": new_end.isoformat(), "appointment": _appointment_snapshot(updated)})
+        return jsonify({"ok": True, "rescheduled": True, "event_id": event_id, "start": new_start.isoformat(), "end": new_end.isoformat(), "duration_minutes": duration_minutes, "appointment": _appointment_snapshot(updated)})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 502
 
@@ -641,27 +688,6 @@ def sms_appointment():
         return jsonify({"ok": True, "sent": True, "to": _normalize_sms_phone(phone_number), "event_id": event_id, "meet_url": meet_url, "message_sid": twilio_result.get("sid", ""), "message_status": twilio_result.get("status", "")})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 502
-
-
-EMAIL_RE = re.compile(
-    r"^[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+$",
-    re.I,
-)
-
-
-@andromeda_bp.post("/lab/email")
-def lab_capture_email():
-    """Validate the caller-confirmed appointment email and return JSON."""
-    auth_error = _require_auth()
-    if auth_error:
-        return auth_error
-
-    data = _json_body()
-    email = _clean(data.get("email"), 320).lower()
-    if not EMAIL_RE.fullmatch(email):
-        return jsonify({"ok": False, "error": "Email address did not validate."}), 400
-
-    return jsonify({"ok": True, "email": email, "captured": True})
 
 
 @andromeda_bp.get("/health")
